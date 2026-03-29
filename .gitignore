@@ -1,4 +1,4 @@
-# Entornos virtuales
+# Venv
 venv/
 .venv/
 
@@ -10,7 +10,7 @@ __pycache__/
 # VS Code
 .vscode/
 
-# Sistema
+# System
 .DS_Store
 
 # Jupyter
