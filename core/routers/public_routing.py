@@ -1,19 +1,101 @@
-import statistics
-import time
-
 from semantic_router import Route
 from semantic_router.encoders import OllamaEncoder
 from semantic_router.routers import SemanticRouter
+import unicodedata
+from typing import Any, Optional
+
+#Class thresholds (Hyperparameters)
+INVENTORY_THRESHOLD = 0.60
+MIN_DELTA = 0.04
 
 routes = [
-    Route(name="saludo", utterances=["hola", "buenas", "que tal"]),
-    Route(name="despedida", utterances=["adios", "nos vemos", "hasta luego"]),
+    Route(
+        name="FAQ",
+        utterances=[
+            "que metodos de pago manejan",
+            "aceptan nequi o daviplata",
+            "hacen envios a todo colombia",
+            "¿Hacen envíos a todo Colombia?",
+            "hacen envios a mi ciudad",
+            "cuales son los canales de atencion",
+            "como contacto soporte",
+            "como hago seguimiento a un pedido en general",
+            "donde puedo consultar el estado de un pedido",
+            "como descargar la factura",
+            "como reportar un problema con un pedido",
+            "cuanto tarda un envio a ciudades principales",
+            "cuanto tarda un envio a zonas rurales"
+           # "Cuanto tarde un envío a zonas rurales" #The accent has a high impact
+        ]
+    ),
+    Route(
+        name="Politicas",
+        utterances=[
+            "cual es la politica de devoluciones",
+            "cual es la politica de garantia",
+            "cuales son las politicas de envio",
+            "que cubre la garantia",
+            "que no cubre la garantia",
+            "cuanto tiempo tengo para devolver un producto",
+            "cuanto tarda el reembolso",
+            "puedo cancelar una compra antes del despacho",
+            "puedo cambiar un producto",
+            "que productos no tienen devolucion",
+            "que pasa si compre un producto en promocion",
+            "puedo cambiar la direccion de envio antes del despacho",
+            #"¿Cuánto tarda un reembolso?", #acc
+            #"¿Qué pasa si el producto fue comprado en promoción?", #acc
+            #"¿Qué productos no tienen devolución?" #acc
+        ]
+    ),
+    Route(
+        name="Inventario",
+        utterances=[
+            "cuanto cuesta este producto",
+            "cual es el precio del producto",
+            "tienen stock disponible",
+            "hay unidades disponibles",
+            "el producto tiene envio gratis",
+            "que precio tiene el iphone 13",
+            "cuanto vale una air fryer oster",
+            "hay inventario del samsung galaxy a55",
+            "este producto esta disponible",
+            "cuantas unidades quedan",
+            "el producto esta agotado",
+            "que productos tienen envio gratis",
+            "sigue disponible este articulo",
+            "hay disponibilidad de este articulo",
+            "lo tienen disponible",
+            "se puede comprar todavia",
+            "este producto aun esta a la venta",
+            "esta habilitada la compra de este producto",
+            "necesito saber si esta disponible",
+            "quisiera saber sobre disponibilidad",
+            "me interesa este producto, hay",
+            "buenas me interesa este articulo esta disponible",
+            "disculpa cuanto cuesta esto",
+            "quisiera saber si aun tienen unidades",
+            "cuanto cuesta y si hay stock",
+            "cual es el precio y disponibilidad",
+            "cuanto cuesta con envio",
+            "el precio incluye envio",
+            "esta en oferta este producto",
+            "este producto tiene descuento",
+            "este producto esta en promocion",
+            "se puede comprar y cuanto cuesta",
+            "¿Esta agotado?",
+            "Oye, ¿todavia venden este producto?",
+            "¿Este producto está en promoción?"
+        ],
+        score_threshold=INVENTORY_THRESHOLD
+    )
 ]
 
 
 encoder = OllamaEncoder(
     name="nomic-embed-text",
     base_url="http://localhost:11434",
+    score_threshold=0.5,
 )
 
 router = SemanticRouter(
@@ -22,61 +104,115 @@ router = SemanticRouter(
     auto_sync="local",
 )
 
-def sec(start, end):
-    return end - start
+VOWELS_TABLE = str.maketrans("", "", "aeiouAEIOU")
 
-def bench_latency(query: str, n: int = 10, warmup: int = 2):
-    total_t = []
-    embed_t = []
-    route_t = []
+def remove_accent(input: str) -> str:
+    t = unicodedata.normalize("NFKD", input)
+    return "".join(c for c in t if not unicodedata.combining(c))
 
-    bench_start = time.perf_counter()
+def classify_public_intent(input: str):
+    lower_input = input.lower()
+    normalized = remove_accent(lower_input)
+    return router(normalized)
 
-    for _ in range(warmup):
-        _ = router(query)
+def inspect_public_routing(
+    input: str,
+    limit: Optional[int] = None,
+    route_filter: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    #Return routing diagnostics including raw top-k and threshold-aware results
+    lower_input = input.lower()
+    normalized = remove_accent(lower_input)
 
-    for _ in range(n):
-        t0 = time.perf_counter()
-        out = router(query)
-        t1 = time.perf_counter()
-        total_t.append(sec(t0, t1))
+    vector = router._encode(text=[normalized], input_type="queries")
+    query_vector = vector[0]
 
-        t2 = time.perf_counter()
-        vector = encoder([query])
-        t3 = time.perf_counter()
-        embed_t.append(sec(t2, t3))
+    raw_scores, raw_routes = router.index.query(
+        vector=query_vector,
+        top_k=router.top_k,
+        route_filter=route_filter,
+    )
 
-        t4 = time.perf_counter()
-        out_vec = router(vector=vector)
-        t5 = time.perf_counter()
-        route_t.append(sec(t4, t5))
+    raw_top_k = [
+        {
+            "route": str(route_name),
+            "score": float(score),
+        }
+        for route_name, score in zip(raw_routes, raw_scores)
+    ]
 
-    bench_end = time.perf_counter()
+    passed = router(
+        normalized,
+        limit=limit,
+        route_filter=route_filter,
+    )
 
-    def p95(vals):
-        vals_sorted = sorted(vals)
-        idx = int(0.95 * (len(vals_sorted) - 1))
-        return vals_sorted[idx]
+    if isinstance(passed, list):
+        passed_routes = passed
+    elif getattr(passed, "name", None):
+        passed_routes = [passed]
+    else:
+        passed_routes = []
 
-    print("Query:", query)
-    print("Ruta detectada (texto):", out.name)
-    print("Ruta detectada (vector):", out_vec.name)
-    print("--- Tiempos de ejecución (s) ---")
-    print("Total por query     avg={:.4f}s p95={:.4f}s".format(statistics.mean(total_t), p95(total_t)))
-    print("Embedding por query avg={:.4f}s p95={:.4f}s".format(statistics.mean(embed_t), p95(embed_t)))
-    print("Routing por query   avg={:.4f}s p95={:.4f}s".format(statistics.mean(route_t), p95(route_t)))
-    print("Tiempo total benchmark: {:.4f}s".format(sec(bench_start, bench_end)))
+    passed_serialized = [
+        {
+            "name": route_choice.name,
+            "similarity_score": (
+                float(route_choice.similarity_score)
+                if route_choice.similarity_score is not None
+                else None
+            ),
+        }
+        for route_choice in passed_routes
+    ]
 
-TEST_INPUTS = [
-"hola amigo",
-"como estamos??",
-"que onda!",
-"nos vemos!",
-"hasta la proxima!",
-"chaito!",
-]
+    thresholds_by_route = {
+        route.name: (
+            float(route.score_threshold) if route.score_threshold is not None else None
+        )
+        for route in router.routes
+    }
 
-if __name__ == "__main__":
-    for query in TEST_INPUTS:
-        bench_latency(query=query, n=10, warmup=2)
-    
+    return {
+        "router_top_k": router.top_k,
+        "thresholds_by_route": thresholds_by_route,
+        "raw_top_k": raw_top_k,
+        "passed_routes": passed_serialized,
+    }
+
+
+def passes_delta(
+    input: str,
+    min_delta: float = MIN_DELTA,
+    route_filter: Optional[list[str]] = None,
+) -> dict:
+    """Return top-2 route margin check using aggregated route scores."""
+    lower_input = input.lower()
+    normalized = remove_accent(lower_input)
+
+    vector = router._encode(text=[normalized], input_type="queries")
+    query_vector = vector[0]
+
+    raw_scores, raw_routes = router.index.query(
+        vector=query_vector,
+        top_k=router.top_k,
+        route_filter=route_filter,
+    )
+
+    query_results = [
+        {"route": str(route_name), "score": float(score)}
+        for route_name, score in zip(raw_routes, raw_scores)
+    ]
+    scored_routes = router._score_routes(query_results=query_results)
+
+    if len(scored_routes) < 2:
+        return {
+            "passes": True,
+            "delta": None
+        }
+
+    delta = float(scored_routes[0][1] - scored_routes[1][1])
+    return {
+        "passes": delta >= min_delta,
+        "delta": delta
+    }
