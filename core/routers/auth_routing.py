@@ -1,15 +1,37 @@
+import os
+from dotenv import load_dotenv
 from strands import Agent
+from strands.models.bedrock import BedrockModel
 from strands.models.ollama import OllamaModel
-from strands.agent import NullConversationManager
+import json
+import re
 
-model = OllamaModel(
-    host="http://localhost:11434",
-    model_id="qwen2.5:7b",
+load_dotenv()
+
+#Model providers 
+
+#Ollama
+def build_ollama_model() -> OllamaModel:
+  return OllamaModel(
+    host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+    model_id=os.getenv("OLLAMA_MODEL_ID", "qwen2.5:7b"),
+    temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0")),
+    max_tokens=int(os.getenv("OLLAMA_MAX_TOKENS", "100")),
+    options={"num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "1024"))},
+  )
+
+#Bedrock
+def build_bedrock_model() -> BedrockModel:
+  return BedrockModel(
+    model_id="mistral.ministral-3-8b-instruct",
+    region_name=os.getenv("AWS_REGION", "us-east-1"),
     temperature=0,
     max_tokens=100,
-    #keep_alive="-1", #force the model to be vram-loaded no matter
-    options={"num_ctx": 1024} #We don't need so much context 
-)
+  )
+
+
+#Hard coded model provider (it can be changed according to availability)
+model = build_bedrock_model()
 
 system_prompt = """ 
 ROL:
@@ -94,22 +116,38 @@ Salida: AMBIGUO
 
 ---
 
-FORMATO DE SALIDA:
+FORMATO DE SALIDA OBLIGATORIO:
 
 Responde con este formato JSON EXACTO:
 {
-  "classification": "PUBLICO" | "PRIVADO" | "AMBIGUO",
+  "route": "PUBLIC" | "PRIVATE" | "AMBIGUOUS",
   "reasoning": "Explicación breve de por qué se eligió esa clasificación"
 }
 """
 
-def classify_intent(input: str):
-  classifier_agent = Agent(
-  model=model, 
-  system_prompt=system_prompt, 
+def classify_auth_route(input: str):
+  auth_routing_agent = Agent(
+  model=model,
+  system_prompt=system_prompt,
   callback_handler=None,
-  #conversation_manager=NullConversationManager()
-  )
+)
 
-  response = classifier_agent(input)
-  return response
+  response = auth_routing_agent(input)
+  raw = str(response).strip()
+
+  if raw.startswith("```"):
+        raw = raw.strip("`")
+        raw = raw.replace("json", "", 1).strip()
+
+  route = "UNKNOWN"
+  try:
+    data = json.loads(raw)
+    route = data.get("route", "UNKNOWN")
+  except json.JSONDecodeError:
+     m = re.search(r"\b(PUBLIC|PRIVATE|AMBIGUOUS)\b", raw.upper())
+     route = m.group(1) if m else "UNKNOWN"
+  
+  return {
+    "route": route,
+    "response_data": response
+  }

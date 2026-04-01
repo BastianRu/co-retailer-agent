@@ -1,6 +1,12 @@
 import json
-from core.routers.auth_routing import classify_intent
+from core.routers.auth_routing import classify_auth_route
 import re
+
+#time measuring
+import time
+
+script_start = time.perf_counter()
+first_response_elapsed = None
 
 #Public cases
 public_cases = [
@@ -84,33 +90,19 @@ special_cases = [
 ]
 
 #Custom cases
-custom_cases = [" tienen este producto a la venta? [imagen de producto x] "]
+custom_cases = [" Quiero saber mas acerca de este producto "]
 
-for i, case in enumerate(custom_cases):
+for i, case in enumerate(public_cases):
     #response handling
-    response = classify_intent(case)
-    raw = str(response).strip()
-
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        raw = raw.replace("json", "", 1).strip()
-
-    try:
-        data = json.loads(raw)
-        classification = data.get("classification", "UNKNOWN")
-    except json.JSONDecodeError:
-        m = re.search(r"\b(PUBLICO|PRIVADO|AMBIGUO)\b", raw.upper())
-        classification = m.group(1) if m else "UNKNOWN"
-
- 
+    response = classify_auth_route(case)
     #Results and metrics for each cycle
-    summary = response.metrics.get_summary()
+    summary = response["response_data"].metrics.get_summary()
     last_usage = summary["agent_invocations"][-1]["usage"]
-    print(f"Case {i}: {classification}")
-    print(f"Reason: {data["reasoning"]}")
+    print(str(case))
+    print(f"Case {i}: {response["route"]}")
+   # print(f"Reason: {data["reasoning"]}")
     print(f"Avg cycle (s): {summary['average_cycle_time']}")
     print(f"Per-call usage: {last_usage}")              
     print("-------------------------------------")
-
 
 

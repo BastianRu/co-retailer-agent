@@ -1,183 +1,171 @@
-from core.routers.public_routing import classify_public_intent, inspect_public_routing, passes_delta
-from colorama import init, Fore, Style
-
-#Colorama init
-init(autoreset=True)
+from core.routers.public_routing import classify_public_route
+import json
+import re
 
 #Faq cases
 faq_cases = [
-    "¿Qué métodos de pago manejan?",
-    "¿Hacen envíos a todo Colombia?",
-    "¿Cuáles son sus canales de atención?",
-    "¿Cómo hago seguimiento a un pedido en general?",
-    "¿Dónde puedo descargar la factura?",
-    "¿Cuánto tarda un envío a Pasto?",
-    "¿Cómo reporto un problema con mi pedido?",
-    "¿Puedo contactarlos por WhatsApp?"
+    "¿Que metodos de pago manejan?",
+    "¿Que medios de pago aceptan?",
+    "¿Aceptan Nequi o Daviplata?",
+    "¿Se puede pagar por PSE?",
+    "¿Manejan pago contraentrega?",
+    "¿Hacen envios a todo Colombia?",
+    "¿Tienen cobertura nacional?",
+    "¿Hacen envios a mi zona?",
+    "¿Mandan pedidos a Pasto?",
+    "¿Envian hasta municipios o solo ciudades principales?",
+    "¿Cuanto tarda un envio a una ciudad principal?",
+    "¿Cuanto demora un envio a una ciudad intermedia?",
+    "¿Cuanto se demora un envio a zona rural?",
+    "¿Los fines de semana hacen envios?",
+    "¿Tambien entregan festivos o solo dias habiles?",
+    "¿Por donde puedo comprar?",
+    "¿Se puede comprar por WhatsApp?",
+    "¿Cuales son los canales de atencion?",
+    "¿Los puedo contactar por WhatsApp Business?",
+    "¿Tienen correo de soporte?",
+    "¿Donde descargo la factura?",
+    "¿Como bajo la factura electronica?",
+    "¿Como hago seguimiento a un pedido en general?",
+    "¿Donde miro el tracking de un pedido?",
+    "¿Donde veo el numero de guia?",
+    "¿Que significa que un pedido este en preparacion?",
+    "¿Que significa el estado 'En camino'?",
+    "¿Que significa 'Listo para entrega'?",
+    "¿Por que un pedido puede llegar en varios paquetes?",
+    "¿Cuantos intentos de entrega hacen normalmente?",
+    "¿Como reporto un problema con mi pedido?",
+    "¿Donde se reportan productos faltantes o incorrectos?",
+    "¿Como hago un reclamo por error de cobro?",
+    "Buenas, ¿por que medio los contacto si tengo un problema?",
+    "Oe, ¿ustedes si hacen envios a toda Colombia o que?",
+    "Parcero, ¿como veo el seguimiento del pedido en general?",
+    "¿Donde reviso la factura, pues?",
+    "¿Que estados puede tener un pedido?",
+    "¿Como funciona el seguimiento del pedido en terminos generales?",
+    "¿Cuanto puede tardar en actualizarse el tracking despues del despacho?",
 ]
 
-#Policy 
+# Policy cases
 policy_cases = [
-    "¿Cuál es la política de devoluciones?",
-    "¿Qué cubre la garantía?",
-    "¿Qué productos no tienen devolución?",
-    "¿Cuánto tiempo tengo para devolver un producto?",
-    "¿Cuánto tarda un reembolso?",
+    "¿Cual es la politica de devoluciones?",
+    "¿Cuanto tiempo tengo para devolver un producto?",
+    "¿Cuales son las condiciones para devolver un producto?",
+    "¿Que opciones tengo para una devolucion?",
+    "¿Puedo pedir cambio por otro producto?",
+    "¿Puedo pedir credito en tienda en vez de reembolso?",
+    "¿El envio original se reembolsa tambien?",
+    "¿Que productos no tienen devolucion?",
+    "¿Los productos en promocion tienen cambio o devolucion?",
+    "¿Que pasa con un producto marcado como venta final?",
+    "¿Aceptan devoluciones de productos usados?",
+    "¿Aceptan devolucion si ya no tengo el empaque original?",
+    "¿Como es el proceso para solicitar una devolucion?",
+    "¿En cuanto tiempo procesan una devolucion?",
+    "¿Cuanto tarda el reembolso a tarjeta de credito?",
+    "¿Cuanto tarda el reembolso a tarjeta debito?",
+    "¿Cuanto tarda el reembolso por PSE?",
     "¿Puedo cancelar una compra antes del despacho?",
-    "¿Puedo cambiar la dirección antes del envío?",
-    "¿Qué pasa si el producto fue comprado en promoción?"
+    "¿Se puede cancelar despues de que ya va en camino?",
+    "¿Puedo cambiar la direccion antes del despacho?",
+    "¿Puedo cambiar la direccion si el pedido ya fue despachado?",
+    "¿Que cubre la garantia?",
+    "¿Que no cubre la garantia?",
+    "¿La garantia cubre danos por golpes o caidas?",
+    "¿La garantia cubre danos por agua?",
+    "¿La garantia cubre desgaste normal?",
+    "¿Que pasa si un tecnico no autorizado toca el producto?",
+    "¿Cuanto dura la garantia de ropa y calzado?",
+    "¿Cuanto dura la garantia de electronica?",
+    "¿Como funciona el proceso de garantia?",
+    "¿Que resoluciones pueden dar por garantia?",
+    "¿Cuanto tarda una reparacion por garantia?",
+    "¿Cuanto tarda un reemplazo por garantia?",
+    "¿Cuanto tarda un reembolso por garantia?",
+    "¿La revision de garantia tiene costo?",
+    "¿Necesito factura para reclamar garantia?",
+    "¿Donde se solicita la garantia?",
+    "¿Si el producto llego incompleto eso entra por garantia?",
+    "¿Que pasa si rechazo el paquete al momento de la entrega?",
+    "¿Las demoras por clima generan reembolso del envio?",
+    "¿Que pasa si la direccion esta mal escrita?",
+    "¿Se puede reprogramar la entrega?",
+    "¿Puedo redirigir a punto de retiro despues de comprar?",
+    "¿Cuando aplica envio gratis?",
+    "¿Como calculan el costo de envio en general?",
+    "¿Quien responde por el producto mientras esta en transito?",
+    "¿Despues de entregado responden por robo o perdida?",
+    "¿Cuantos intentos de entrega hacen antes de devolver el paquete?",
+    "¿Que pasa si un producto comprado en descuento sale defectuoso?",
+    "Parce, si compre algo en promo, ¿igual lo puedo devolver?",
+    "Oiga, ¿si el producto ya va en camino todavia lo puedo cancelar o paila?",
+    "¿La direccion se puede cambiar despues del despacho o ya no?",
 ]
 
-#Inventory 
-#It has more cases due to we have to focus on inventory routing (it's the risky case)
 inventory_cases = [
-    "¿Cuánto cuesta el iPhone 13?",
-    "¿Tienen stock del Samsung Galaxy A55?",
-    "¿Cuál es el precio de una air fryer Oster?",
-    "¿Hay unidades disponibles de este producto?",
-    "¿Este producto tiene envío gratis?",
-    "¿Cuántas unidades quedan?",
-    "¿El producto está agotado?",
-    "¿Qué productos tienen envío gratis?",
-    "¿Cuánto vale este producto?",
-    "¿Qué precio tiene este artículo?",
-    "¿Hay disponibilidad de este producto?",
+    "¿Cuanto cuesta este producto?",
+    "¿Que precio tiene este producto?",
+    "¿Cual es el valor de este producto?",
+    "¿Cuanto vale este articulo?",
+    "¿Me regalas el precio de este producto?",
+    "¿Cuanto cuesta el iPhone 13?",
+    "¿Que precio tiene la air fryer Oster?",
+    "¿Cuanto vale este Samsung Galaxy A55?",
+    "¿Hay stock de este producto?",
+    "¿Tienen stock disponible?",
+    "¿Hay existencias de este producto?",
     "¿Tienen existencias?",
-    "¿Está disponible en inventario?",
+    "¿Esta disponible este articulo?",
+    "¿Sigue disponible este producto?",
+    "¿Todavia lo tienen disponible?",
+    "¿Se puede comprar todavia?",
+    "¿Este producto aun esta a la venta?",
+    "¿Lo tienen en inventario?",
+    "¿Esta en existencia?",
+    "¿Hay disponibilidad de este producto?",
     "¿Quedan unidades?",
-    "¿Está agotado?",
-    "¿Cuánto cuesta y si tiene stock?",
-    "¿Este producto tiene envío gratis?",
-    "¿Qué productos tienen envío gratis?",
-    "¿Cuánto cuesta el Samsung Galaxy A55?",
-    "¿Hay stock del iPhone 13?",
-    "¿Cuál es el precio de esta referencia?",
-    "¿Puedo comprar este producto todavía?",
-    "¿Sigue disponible este artículo?",
+    "¿Cuantas unidades quedan?",
+    "¿El producto esta agotado?",
     "¿Hay unidades reservadas o disponibles?",
-    "¿Cuál es el valor del producto?",
-    "¿Tienen en existencia la air fryer Oster?",
-    "¿Está en inventario?",
-    "¿Hay disponibilidad?",
-    "¿Se puede comprar todavía?",
-    "¿Sigue disponible este artículo?",
-    "¿Este producto aún está a la venta?",
-    "¿Lo tienen disponible?",
-    "¿Está en existencia?",
-    "¿Se encuentra disponible actualmente?",
-    "¿Puedo conseguir este producto?",
-    "¿Está habilitada la compra de este producto?",
-    "¿Cuánto cuesta y si hay stock?",
-    "¿Cuál es el precio y disponibilidad?",
-    "¿Tiene stock y cuánto vale?",
+    "¿Tienen en existencia la licuadora Oster?",
+    "¿El producto tiene envio gratis?",
+    "¿Este articulo tiene envio gratis?",
+    "¿Que productos tienen envio gratis?",
+    "¿Este producto esta en promocion?",
+    "¿Esta en descuento este producto?",
+    "¿Esta en oferta este articulo?",
+    "¿Cual es el precio con promocion?",
+    "¿Cuanto cuesta con descuento?",
+    "¿Cuanto cuesta y si hay stock?",
+    "¿Cual es el precio y disponibilidad?",
+    "¿Tiene stock y cuanto vale?",
     "¿Hay unidades disponibles y precio?",
-    "¿Cuánto cuesta y si está disponible?",
+    "¿Cuanto cuesta y si esta disponible?",
     "¿Precio y existencia del producto?",
-    "Estoy interesado en este producto, ¿lo tienen?",
-    "Quiero comprar esto, ¿todavía se puede?",
-    "Estoy viendo este producto, ¿está disponible?",
-    "Antes de comprar, ¿hay unidades?",
-    "Estoy pensando en comprarlo, ¿hay stock?",
-    "¿Crees que aún haya unidades disponibles?",
-    "¿Este producto tiene envío gratis?",
-    "¿Este producto está en promoción?",
-    "¿Cuánto cuesta con envío?",
-    "¿El precio incluye envío?",
-    "¿Este producto tiene descuento?",
-    "¿Está en oferta este producto?",
-    "¿Cuál es el precio con promoción?",
-    "Hola, quería saber si tienen stock del producto",
-    "Buenas, me interesa este artículo, ¿está disponible?",
-    "Oye, ¿todavía venden este producto?",
-    "Disculpa, ¿cuánto cuesta esto?",
-    "Hey, ¿queda algo en inventario?",
-    "Quisiera saber si aún tienen unidades",
-    "Quiero saber si puedo comprar este producto",
-    "Necesito saber si está disponible",
-    "Estoy viendo si hay unidades",
-    "Quisiera saber sobre disponibilidad",
-    "Me interesa este producto, ¿hay?",
-    "¿Este producto tiene envío gratis y está disponible?",
-    "¿Está en promoción y hay stock?",
-    "¿Cuánto cuesta y si aplica descuento?",
-    "¿El producto tiene garantía y cuánto vale?",
-    "¿Se puede comprar y cuánto cuesta?",
-    "Cuanto cuesta esta vaina?"
+    "Buenas, ¿si tienen este producto o ya se acabo?",
+    "Oe, ¿todavia venden este producto o ya no?",
+    "Parce, ¿queda stock de esa referencia?",
+    "¿Hay de este producto todavia, pues?",
+    "¿Cuanto vale esa vaina?",
+    "¿A como esta este producto?",
+    "¿En cuanto sale este articulo?",
+    "¿Si hay unidades de este producto o paila?",
+    "¿Me confirmas si este producto tiene promo y stock?",
+    "¿Este producto aplica para envio gratis o no?",
+    "¿Que precio tiene y si lo puedo comprar ya mismo?",
 ]
 
-#Frontier 
-boundary_cases = [
-    "¿Cómo funciona el seguimiento del pedido?",
-    "¿Puedo cancelar una compra?",
-    "¿Qué pasa si mi pedido se demora?",
-    "¿Puedo devolver este producto?",
-    "¿El envío tiene costo?",
-    "¿Este producto tiene envío gratis?",
-    "¿Qué pasa si el producto llega dañado?",
-    "¿Cuánto tarda el reembolso?"
-]
- 
-#s_cases: faq | pol | inv | bound
-s_case = "inv"
-match s_case:
-    case "faq":
-        print("FAQ cases\n")
-        for i, query in enumerate(faq_cases):
-            output = classify_public_intent(query)
-            delta_info = passes_delta(query)
-            print(f"{i}. Query: {query}")
-            if str(output.name) != "FAQ" or delta_info["passes"] is False:
-                print(f"{Fore.RED}[Failed]{Style.RESET_ALL}")
-            print(f"Predicted Route: {output.name}")
-            print(f"CS: {output.similarity_score}")
-            print(f"Delta: {delta_info['delta']}")
-            output_meta = inspect_public_routing(query)
-            print(output_meta["passed_routes"])
-            print("\n")  
-    case "pol":
-        print("Policy cases\n")
-        for i, query in enumerate(policy_cases):
-            output = classify_public_intent(query)
-            delta_info = passes_delta(query)
-            print(f"{i}. Query: {query}")
-            if str(output.name) != "Politicas" or delta_info["passes"] is False:
-                print(f"{Fore.RED}[Failed]{Style.RESET_ALL}")
-            print(f"Predicted Route: {output.name}")            
-            print(f"CS: {output.similarity_score}")
-            print(f"Delta: {delta_info['delta']}")
-            output_meta = inspect_public_routing(query)
-            print(output_meta["passed_routes"])
-            print("\n")
-    case "inv":
-        print("Inventory cases\n")
-        for i, query in enumerate(inventory_cases):
-            output = classify_public_intent(query)
-            delta_info = passes_delta(query)
-            print(f"{i}. Query: {query}")
-            if str(output.name) != "Inventario" or delta_info["passes"] is False:
-                print(f"{Fore.RED}[Failed]{Style.RESET_ALL}")
-            print(f"Predicted Route: {output.name}")
-            print(f"CS: {output.similarity_score}")
-            print(f"Delta: {delta_info['delta']}")
-            output_meta = inspect_public_routing(query)
-            print(output_meta["passed_routes"])
-            print("\n")
-    case "bound":
-        print("Boundary cases\n")
-        for i, query in enumerate(boundary_cases):
-            output = classify_public_intent(query)
-            print(f"Query: {query}")
-            print(f"{i}: Predicted Route: {output.name}")
-            print(f"CS: {output.similarity_score}")
-            output_meta = inspect_public_routing(query)
-            print(output_meta["passed_routes"])
-            print("\n")
-    case _:
-        print("Another query...\n")
-        query = "¿Cuánto tarda un envío a Pasto?"
-        output = classify_public_intent(query)
-        output_meta = inspect_public_routing(query)
-        print(output_meta["passed_routes"])
-        print("\n")
+custom_cases = [" holaa, hacen envios a popa? "]
 
-        
+for i, case in enumerate(faq_cases):
+    #response handling
+    response = classify_public_route(case)
+    #Results and metrics for each cycle
+    summary = response["response_data"].metrics.get_summary()
+    last_usage = summary["agent_invocations"][-1]["usage"]
+    print(str(case))
+    print(f"Case {i}: {response["route"]}")
+   # print(f"Reason: {data["reasoning"]}")
+    print(f"Avg cycle (s): {summary['average_cycle_time']}")
+    print(f"Per-call usage: {last_usage}")              
+    print("-------------------------------------")

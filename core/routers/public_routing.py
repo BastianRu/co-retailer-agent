@@ -1,218 +1,144 @@
-from semantic_router import Route
-from semantic_router.encoders import OllamaEncoder
-from semantic_router.routers import SemanticRouter
-import unicodedata
-from typing import Any, Optional
+import os
+from dotenv import load_dotenv
+from strands import Agent
+from strands.models.bedrock import BedrockModel
+from strands.models.ollama import OllamaModel
+import json
+import re
 
-#Class thresholds (Hyperparameters)
-INVENTORY_THRESHOLD = 0.60
-MIN_DELTA = 0.04
+load_dotenv()
 
-routes = [
-    Route(
-        name="FAQ",
-        utterances=[
-            "que metodos de pago manejan",
-            "aceptan nequi o daviplata",
-            "hacen envios a todo colombia",
-            "¿Hacen envíos a todo Colombia?",
-            "hacen envios a mi ciudad",
-            "cuales son los canales de atencion",
-            "como contacto soporte",
-            "como hago seguimiento a un pedido en general",
-            "donde puedo consultar el estado de un pedido",
-            "como descargar la factura",
-            "como reportar un problema con un pedido",
-            "cuanto tarda un envio a ciudades principales",
-            "cuanto tarda un envio a zonas rurales"
-           # "Cuanto tarde un envío a zonas rurales" #The accent has a high impact
-        ]
-    ),
-    Route(
-        name="Politicas",
-        utterances=[
-            "cual es la politica de devoluciones",
-            "cual es la politica de garantia",
-            "cuales son las politicas de envio",
-            "que cubre la garantia",
-            "que no cubre la garantia",
-            "cuanto tiempo tengo para devolver un producto",
-            "cuanto tarda el reembolso",
-            "puedo cancelar una compra antes del despacho",
-            "puedo cambiar un producto",
-            "que productos no tienen devolucion",
-            "que pasa si compre un producto en promocion",
-            "puedo cambiar la direccion de envio antes del despacho",
-            #"¿Cuánto tarda un reembolso?", #acc
-            #"¿Qué pasa si el producto fue comprado en promoción?", #acc
-            #"¿Qué productos no tienen devolución?" #acc
-        ]
-    ),
-    Route(
-        name="Inventario",
-        utterances=[
-            "cuanto cuesta este producto",
-            "cual es el precio del producto",
-            "tienen stock disponible",
-            "hay unidades disponibles",
-            "el producto tiene envio gratis",
-            "que precio tiene el iphone 13",
-            "cuanto vale una air fryer oster",
-            "hay inventario del samsung galaxy a55",
-            "este producto esta disponible",
-            "cuantas unidades quedan",
-            "el producto esta agotado",
-            "que productos tienen envio gratis",
-            "sigue disponible este articulo",
-            "hay disponibilidad de este articulo",
-            "lo tienen disponible",
-            "se puede comprar todavia",
-            "este producto aun esta a la venta",
-            "esta habilitada la compra de este producto",
-            "necesito saber si esta disponible",
-            "quisiera saber sobre disponibilidad",
-            "me interesa este producto, hay",
-            "buenas me interesa este articulo esta disponible",
-            "disculpa cuanto cuesta esto",
-            "quisiera saber si aun tienen unidades",
-            "cuanto cuesta y si hay stock",
-            "cual es el precio y disponibilidad",
-            "cuanto cuesta con envio",
-            "el precio incluye envio",
-            "esta en oferta este producto",
-            "este producto tiene descuento",
-            "este producto esta en promocion",
-            "se puede comprar y cuanto cuesta",
-            "¿Esta agotado?",
-            "Oye, ¿todavia venden este producto?",
-            "¿Este producto está en promoción?"
-        ],
-        score_threshold=INVENTORY_THRESHOLD
-    )
-]
+def build_ollama_model() -> OllamaModel:
+  return OllamaModel(
+    host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+    model_id=os.getenv("OLLAMA_MODEL_ID", "qwen2.5:7b"),
+    temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0")),
+    max_tokens=int(os.getenv("OLLAMA_MAX_TOKENS", "100")),
+    options={"num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "1024"))},
+  )
 
 
-encoder = OllamaEncoder(
-    name="nomic-embed-text",
-    base_url="http://localhost:11434",
-    score_threshold=0.5,
-)
+def build_bedrock_model() -> BedrockModel:
+  return BedrockModel(
+    model_id="mistral.ministral-3-8b-instruct",
+    region_name=os.getenv("AWS_REGION", "us-east-2"),
+    temperature=0,
+    max_tokens=60,
+  )
 
-router = SemanticRouter(
-    encoder=encoder,
-    routes=routes,
-    auto_sync="local",
-)
+model = build_bedrock_model()
 
-VOWELS_TABLE = str.maketrans("", "", "aeiouAEIOU")
+system_prompt = """
+Eres un clasificador de intención para un agente de e-commerce en Colombia.
 
-def remove_accent(input: str) -> str:
-    t = unicodedata.normalize("NFKD", input)
-    return "".join(c for c in t if not unicodedata.combining(c))
+Tu única tarea es clasificar la consulta del usuario en exactamente una de estas categorías:
 
-def classify_public_intent(input: str):
-    lower_input = input.lower()
-    normalized = remove_accent(lower_input)
-    return router(normalized)
+- FAQ
+- POLICY
+- INVENTORY
+- AMBIGUOUS
 
-def inspect_public_routing(
-    input: str,
-    limit: Optional[int] = None,
-    route_filter: Optional[list[str]] = None,
-) -> dict[str, Any]:
-    #Return routing diagnostics including raw top-k and threshold-aware results
-    lower_input = input.lower()
-    normalized = remove_accent(lower_input)
+Definiciones:
 
-    vector = router._encode(text=[normalized], input_type="queries")
-    query_vector = vector[0]
+1. FAQ
+Consultas generales y operativas que pueden responderse directamente sin consultar datos específicos de productos ni aplicar recuperación documental obligatoria.
+Ejemplos:
+- métodos o medios de pago
+- cobertura de envíos
+- tiempos generales de envío
+- canales de atención
+- cómo descargar factura
+- cómo consultar tracking en general
+- significado general de estados del pedido
+- cómo reportar un problema
+- dónde comprar o si se puede comprar por WhatsApp
 
-    raw_scores, raw_routes = router.index.query(
-        vector=query_vector,
-        top_k=router.top_k,
-        route_filter=route_filter,
-    )
+2. POLICY
+Consultas sobre reglas, condiciones, cobertura, exclusiones, plazos o procesos formales de:
+- devoluciones y cambios
+- garantía
+- envíos
+- reembolsos
+- cancelaciones
+- modificación de dirección
+- responsabilidad de la empresa
+- condiciones de entrega
+- productos en promoción respecto a devolución/garantía
+- cuándo aplica envío gratis como regla general
 
-    raw_top_k = [
-        {
-            "route": str(route_name),
-            "score": float(score),
-        }
-        for route_name, score in zip(raw_routes, raw_scores)
-    ]
+Estas consultas deben tratarse como políticas incluso si mencionan palabras como "producto", "pedido", "envío" o "garantía".
 
-    passed = router(
-        normalized,
-        limit=limit,
-        route_filter=route_filter,
-    )
+3. INVENTORY
+Consultas que requieren conocer información específica de catálogo o disponibilidad actual de productos.
+Incluye:
+- precio
+- stock
+- existencias
+- disponibilidad
+- si un producto sigue a la venta
+- si está agotado
+- cuántas unidades quedan
+- si tiene envío gratis a nivel de producto
+- si tiene promoción, descuento u oferta a nivel de producto
+- precio con promoción
+- combinación de precio + stock + disponibilidad
 
-    if isinstance(passed, list):
-        passed_routes = passed
-    elif getattr(passed, "name", None):
-        passed_routes = [passed]
-    else:
-        passed_routes = []
+Si la consulta pide un valor o estado específico de un producto o referencia, clasifica como INVENTORY.
 
-    passed_serialized = [
-        {
-            "name": route_choice.name,
-            "similarity_score": (
-                float(route_choice.similarity_score)
-                if route_choice.similarity_score is not None
-                else None
-            ),
-        }
-        for route_choice in passed_routes
-    ]
+4. AMBIGUOUS
+Usa esta categoría solo si la consulta no permite distinguir de forma confiable entre dos o más categorías anteriores.
 
-    thresholds_by_route = {
-        route.name: (
-            float(route.score_threshold) if route.score_threshold is not None else None
-        )
-        for route in router.routes
-    }
+Reglas de decisión importantes:
 
-    return {
-        "router_top_k": router.top_k,
-        "thresholds_by_route": thresholds_by_route,
-        "raw_top_k": raw_top_k,
-        "passed_routes": passed_serialized,
-    }
+- Si la consulta trata sobre precio, stock, existencias, disponibilidad, promoción, descuento, oferta o envío gratis de un producto específico, clasifica como INVENTORY.
+- Si la consulta trata sobre normas, condiciones, cobertura, tiempos, exclusiones o procedimientos, clasifica como POLICY.
+- Si la consulta trata sobre orientación general de uso del servicio, canales, pagos, cobertura, tracking general, factura o estados generales, clasifica como FAQ.
+- No clasifiques como INVENTORY solo porque aparezcan palabras como "producto", "comprar", "pedido" o "envío".
+- No clasifiques como FAQ si la consulta pregunta por reglas o condiciones formales.
+- Si dudas entre FAQ y POLICY, prefiere POLICY cuando la consulta suene a regla, condición, cobertura, exclusión, plazo o proceso.
+- Si dudas entre POLICY e INVENTORY, prefiere INVENTORY solo cuando la consulta pida un dato específico y actual de catálogo.
+
+Formato de salida obligatorio:
+
+Responde únicamente en JSON válido con esta forma exacta:
+{"route":"FAQ"}
+o
+{"route":"POLICY"}
+o
+{"route":"INVENTORY"}
+o
+{"route":"AMBIGUOUS"}
+
+No agregues explicaciones.
+No agregues texto adicional.
+"""
+
+def classify_public_route(input: str):
+  public_routing_agent = Agent(
+  model=model,
+  system_prompt=system_prompt,
+  callback_handler=None,
+  )
+  response = public_routing_agent(input)
+  raw = str(response).strip()
+
+  if raw.startswith("```"):
+    raw = raw.strip("`")
+    raw = raw.replace("json", "", 1).strip()
+
+  route = "UNKNOWN"
+  try:
+        data = json.loads(raw)
+        route = data.get("route", "UNKNOWN")
+  except json.JSONDecodeError:
+        m = re.search(r"\b(PUBLIC|PRIVATE|AMBIGUOUS)\b", raw.upper())
+        route = m.group(1) if m else "UNKNOWN"
+
+  return {
+    "route": route,
+    "response_data": response
+  }
 
 
-def passes_delta(
-    input: str,
-    min_delta: float = MIN_DELTA,
-    route_filter: Optional[list[str]] = None,
-) -> dict:
-    """Return top-2 route margin check using aggregated route scores."""
-    lower_input = input.lower()
-    normalized = remove_accent(lower_input)
 
-    vector = router._encode(text=[normalized], input_type="queries")
-    query_vector = vector[0]
 
-    raw_scores, raw_routes = router.index.query(
-        vector=query_vector,
-        top_k=router.top_k,
-        route_filter=route_filter,
-    )
-
-    query_results = [
-        {"route": str(route_name), "score": float(score)}
-        for route_name, score in zip(raw_routes, raw_scores)
-    ]
-    scored_routes = router._score_routes(query_results=query_results)
-
-    if len(scored_routes) < 2:
-        return {
-            "passes": True,
-            "delta": None
-        }
-
-    delta = float(scored_routes[0][1] - scored_routes[1][1])
-    return {
-        "passes": delta >= min_delta,
-        "delta": delta
-    }
