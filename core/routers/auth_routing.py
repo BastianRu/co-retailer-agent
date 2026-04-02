@@ -24,9 +24,10 @@ def build_ollama_model() -> OllamaModel:
 def build_bedrock_model() -> BedrockModel:
   return BedrockModel(
     model_id="mistral.ministral-3-8b-instruct",
-    region_name=os.getenv("AWS_REGION", "us-east-1"),
+    region_name=os.getenv("AWS_REGION", "us-east-2"),
     temperature=0,
     max_tokens=100,
+    streaming=False
   )
 
 

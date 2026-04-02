@@ -24,6 +24,7 @@ def build_bedrock_model() -> BedrockModel:
     region_name=os.getenv("AWS_REGION", "us-east-2"),
     temperature=0,
     max_tokens=60,
+    streaming=False
   )
 
 model = build_bedrock_model()
@@ -131,7 +132,7 @@ def classify_public_route(input: str):
         data = json.loads(raw)
         route = data.get("route", "UNKNOWN")
   except json.JSONDecodeError:
-        m = re.search(r"\b(PUBLIC|PRIVATE|AMBIGUOUS)\b", raw.upper())
+        m = re.search(r"\b(POLICY|FAQ|INVENTORY|AMBIGUOUS)\b", raw.upper())
         route = m.group(1) if m else "UNKNOWN"
 
   return {

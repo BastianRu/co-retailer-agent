@@ -4,9 +4,8 @@ from typing import Any
 
 _TOOL_TRACE = []
 _SESSION_CUSTOMER = None
-
+ 
 #tool trace management
-
 def add_tool_trace(tool_name: str, input_data: Any, output_data: Any) -> dict:
     entry = {
         "tool_name": tool_name,
@@ -48,6 +47,7 @@ def reset_session():
     _TOOL_TRACE.clear()
     _SESSION_CUSTOMER = None
 
+IS_AUTHENTICATED = get_session_customer() is not None
 
 #test
 

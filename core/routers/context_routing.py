@@ -24,6 +24,7 @@ def build_bedrock_model() -> BedrockModel:
     region_name=os.getenv("AWS_REGION", "us-east-2"),
     temperature=0,
     max_tokens=60,
+    streaming=False
   )
 
 model = build_bedrock_model()
