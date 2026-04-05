@@ -104,7 +104,7 @@ es PRIVATE.
 
 3. Si menciona un número de pedido o una orden concreta asociada a seguimiento, montos o estado, es PRIVATE.
 
-4. Si pregunta por reglas generales, políticas, condiciones, plazos, coberturas o procedimientos sin anclarse a una compra personal, puede ser PUBLIC.
+4. Si pregunta por reglas generales, políticas, condiciones, plazos, coberturas o procedimientos sin anclarse a una compra personal, es PUBLIC.
 
 5. Si una interpretación razonable permite que sea general o personal y no hay suficiente señal, clasifica como AMBIGUOUS.
 
@@ -124,6 +124,8 @@ PUBLIC:
 - "¿Cómo hago seguimiento a un pedido?"
 - "¿Cuánto cuesta el Samsung Galaxy A55?"
 - "¿Tienen stock del Air Fryer Oster?"
+- "Como es lo de las devoluciones?"
+- "Como devuelvo un producto?"
 
 PRIVATE:
 - "¿Dónde está mi pedido?"
@@ -134,8 +136,6 @@ PRIVATE:
 - "¿El pedido 2211 ya fue entregado?"
 
 AMBIGUOUS:
-- "¿Puedo devolver este producto?"
-- "¿Puedo cancelar una compra?"
 - "Necesito información sobre una devolución"
 - "Quiero saber sobre la garantía de mi producto"
 

@@ -268,7 +268,6 @@ query_agent = Agent(
 
 def rewrite_query(input: str):
   
-
   response = query_agent(input)
   raw = str(response).strip()
 

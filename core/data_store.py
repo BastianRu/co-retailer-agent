@@ -64,6 +64,24 @@ def load_s3_data(key: str) -> pd.DataFrame | str:
 
     return _CACHE[key]
 
+
+def get_s3_object_metadata(key: str) -> dict:
+    """
+    Returns S3 object metadata without downloading the file body.
+    Useful for quick change detection via ETag and object properties.
+    """
+    response = s3_client.head_object(
+        Bucket=BUCKET_NAME,
+        Key=f"{PREFIX}{key}"
+    )
+
+    return {
+        "etag": response.get("ETag", "").strip('"'),
+        "last_modified": response.get("LastModified"),
+        "content_length": response.get("ContentLength"),
+        "version_id": response.get("VersionId"),
+    }
+
 #tests
 if __name__ == "__main__":
     _start = time.perf_counter()

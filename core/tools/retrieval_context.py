@@ -1,3 +1,5 @@
+from core.tools.embedding_cache import get_or_compute_embeddings
+from core.session_context import add_tool_trace
 from core.data_store import load_s3_data
 from dotenv import load_dotenv
 from strands import tool
@@ -115,29 +117,40 @@ def retrieval_context(query: str) -> list[dict]:
         "Política de devoluciones.md": load_s3_data("Política de devoluciones.md"),
     }
     f = time.perf_counter()
-    print(f"Load all s3 files: {s - f}")
+    #print(f"Load all s3 files: {f - s}")
 
-    # 2. Chunk all docs by ## sections
+    # 2. Build/reuse per-document cached embeddings and collect all chunks
     s = time.perf_counter()
 
     all_chunks: list[dict] = []
+    chunk_vecs_parts: list[np.ndarray] = []
     for key, md_text in docs.items():
         if isinstance(md_text, str):
-            all_chunks.extend(chunk_md_by_sections(md_text, key))
+            doc_vecs, doc_chunks = get_or_compute_embeddings(
+                doc_name=key,
+                md_text=md_text,
+                chunk_fn=chunk_md_by_sections,
+                embed_fn=embed_texts,
+            )
 
-    if not all_chunks:
+            if len(doc_chunks) > 0:
+                all_chunks.extend(doc_chunks)
+                chunk_vecs_parts.append(doc_vecs)
+
+    if not all_chunks or not chunk_vecs_parts:
         return []
+
+    chunk_vecs = np.vstack(chunk_vecs_parts)
+
     f = time.perf_counter()
-    print(f"Chunk all files: {s - f}")
+    #print(f"Load chunk cache/compute files: {f - s}")
 
     s = time.perf_counter()
-    # 3. Embed all chunks (cached) and the query
-    chunk_texts = [c["embed_text"] for c in all_chunks]
-    chunk_vecs = embed_texts(chunk_texts)          # (n_chunks, dim)
+    # 3. Embed only the query
     query_vec  = embed_texts([query])[0]           # (dim,)
 
     f = time.perf_counter()
-    print(f"Embed all chunks and query: {s - f}")
+    #print(f"Embed query: {f - s}")
 
     s = time.perf_counter()
     # 4. Cosine similarity and top-3
@@ -146,8 +159,9 @@ def retrieval_context(query: str) -> list[dict]:
     top_indices = np.argsort(scores)[-top_k:][::-1]
 
     f = time.perf_counter()
-    print(f"Cosine sim: {s - f}")
+    #print(f"Cosine sim: {f - s}")
 
+    
     # 5. Build result
     results = []
     for idx in top_indices:
@@ -159,11 +173,19 @@ def retrieval_context(query: str) -> list[dict]:
             "content":       chunk["content"],
         })
 
+    #tool tracing
+    add_tool_trace("retrieval_context", 
+        { "query": query }, 
+        { "results": results })
     return results
 
 if __name__  == "__main__":
-    results = retrieval_context("Que cubre la garantia?")
+    results = retrieval_context("Como es para devolver?")
     for ch in results:
         print(ch["section_title"])
+        print("---------------------")
+        print(ch["content"])
+
+    print(f"Chunks retrieved: {len(results)}"  )
 
 

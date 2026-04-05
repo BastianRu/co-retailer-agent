@@ -1,47 +1,103 @@
-import json
-import os 
-import boto3
+from strands.models.bedrock import BedrockModel
+from strands import Agent
+from core.tools.retrieval_context import retrieval_context
 from dotenv import load_dotenv
-import time
+import json
+import re
+import os
 
-test_text="""
+load_dotenv()
 
+#Model providers 
 
-## **Vigencia de la Garantía por Categoría**
+#Bedrock
+def build_bedrock_model() -> BedrockModel:
+  return BedrockModel(
+    model_id="mistral.ministral-3-8b-instruct",
+    region_name=os.getenv("AWS_REGION", "us-east-2"),
+    temperature=0.2,
+    max_tokens=800,
+    streaming=False
+  )
 
-La duración de la garantía varía según la categoría del producto:
+model = build_bedrock_model()
 
-| Categoría | Garantía | Cobertura |
-| ----- | ----- | ----- |
-| **Electrónica** | 6 a 36 meses | Defectos de fabricación, fallas de software y hardware |
-| **Electrodomésticos** | 6 a 36 meses | Defectos de fabricación, fallas mecánicas y eléctricas |
-| **Hogar y Muebles** | 6 a 36 meses | Defectos estructurales, fallas en mecanismos |
-| **Ropa y Calzado** | 90 días | Defectos de confección y fallas en materiales |
-| **Deportes y Fitness** | 6 a 24 meses | Defectos de fabricación, fallas mecánicas |
-| **Belleza y Cuidado Personal** | 6 a 36 meses | Defectos en equipos eléctricos |
-| **Libros y Papelería** | 6 a 36 meses | Defectos en dispositivos electrónicos |
-| **Juguetes y Bebés** | 6 a 36 meses | Defectos de fabricación, seguridad del producto |
+system_prompt = """
+Eres RAG_AGENT para soporte de politicas de e-commerce.
 
-**Nota:** El periodo exacto de garantía de cada producto se encuentra indicado en la ficha del producto.
+Reglas minimas:
+- Usa la tool retrieval_context(query) para recuperar secciones relevantes antes de responder.
+- Responde unicamente con informacion sustentada por el contexto recuperado.
+- Si no hay contexto suficiente, dilo de forma breve y clara.
+- No inventes ni infieras informacion. (politicas, plazos o coberturas)
 
----
+Salida obligatoria: JSON valido y solo JSON.
+{
+  "route": "ANSWER" | "NO_CONTEXT" | "BLOCK",
+  "message": "respuesta breve para el usuario",
+  "reason": "explicacion breve"
+}
 """
 
-s = time.perf_counter()
-client = boto3.client(
-    'bedrock-runtime', 
-    region_name= "us-east-2"
+
+_VALID_ROUTES = {"ANSWER", "NO_CONTEXT", "BLOCK"}
+
+
+def _extract_code_block(raw: str) -> str:
+  if raw.startswith("```"):
+    raw = raw.strip("`")
+    raw = raw.replace("json", "", 1).strip()
+  return raw
+
+
+def _parse_rag_result(raw: str) -> dict:
+  route = "NO_CONTEXT"
+  message = "No encontre contexto suficiente para responder con precision."
+  reason = "fallback"
+
+  try:
+    data = json.loads(raw)
+    parsed_route = str(data.get("route", "")).strip().upper()
+    if parsed_route in _VALID_ROUTES:
+      route = parsed_route
+    message = str(data.get("message", message)).strip()
+    reason = str(data.get("reason", reason)).strip()
+  except json.JSONDecodeError:
+    route_match = re.search(r"\b(ANSWER|NO_CONTEXT|BLOCK)\b", raw.upper())
+    if route_match:
+      route = route_match.group(1)
+
+    message_match = re.search(r'"message"\s*:\s*"([^"]+)"', raw, flags=re.IGNORECASE)
+    reason_match = re.search(r'"reason"\s*:\s*"([^"]+)"', raw, flags=re.IGNORECASE)
+
+    if message_match:
+      message = message_match.group(1).strip()
+    if reason_match:
+      reason = reason_match.group(1).strip()
+
+  return {
+    "route": route,
+    "message": message,
+    "reason": reason,
+  }
+
+def solve_query(input: str):
+  rag_agent = Agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=[retrieval_context],
+        callback_handler=None,
     )
+  response = rag_agent(input)
+  raw = _extract_code_block(str(response).strip())
+  result = _parse_rag_result(raw)
 
-for i in range(10):
-  response = client.invoke_model(
-                  modelId="amazon.titan-embed-text-v2:0",
-                  body=json.dumps({"inputText": test_text})
-              )
+  return {
+    "route": result["route"],
+    "message": result["message"],
+    "reason": result["reason"],
+    "response_data": response,
+  }
 
+    
 
-response = json.loads(response['body'].read())["embedding"]
-
-f = time.perf_counter()
-print(response)
-print(f - s)
