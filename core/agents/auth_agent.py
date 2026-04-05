@@ -17,7 +17,7 @@ def build_bedrock_model() -> BedrockModel:
     model_id="mistral.ministral-3-8b-instruct",
     region_name=os.getenv("AWS_REGION", "us-east-2"),
     temperature=0.2,
-    max_tokens=300,
+    max_tokens=350,
     streaming=False
   )
 

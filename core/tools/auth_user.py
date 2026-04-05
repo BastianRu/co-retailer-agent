@@ -41,8 +41,8 @@ def auth_user(identifier: str, identifier_type: str):
         add_tool_trace("auth_user", input, output)
         return output
 
-    customers = load_s3_data("customers")
-    customer = customers.loc[customers[identifier_type] == f"{identifier}"]
+    customers = load_s3_data("customers.csv")
+    customer = customers.loc[customers[identifier_type] == f"{identifier}"] # type: ignore
     
     if customer.empty:
         output = {

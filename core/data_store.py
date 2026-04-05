@@ -20,55 +20,62 @@ s3_client = boto3.client(
 )
 
 # In-memory cache: table_name -> DataFrame
-_CACHE: Dict[str, pd.DataFrame] = {}
+_CACHE: Dict[str, pd.DataFrame | str] = {}
 
 
-#loads ALL the .csv files from the bucket (used for warm-up method)
+#loads ALL the .csv files (or .md) from the bucket (used for warm-up method)
 #skips tables already in cache
-def load_all_s3_data() -> Dict[str, pd.DataFrame]:
+def load_all_s3_data() -> Dict[str, pd.DataFrame | str]:
     global _CACHE
 
     response = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=PREFIX)
 
     for obj in response.get('Contents', []):
         key = obj['Key']
-        if not key.endswith('.csv'):
+        if not (key.endswith('.csv') or key.endswith('.md')):
             continue
 
-        table_name = key.replace(PREFIX, '').replace('.csv', '').replace('/', '')
-
-        if table_name in _CACHE:
+        if key in _CACHE:
             continue
 
         obj_response = s3_client.get_object(Bucket=BUCKET_NAME, Key=key)
-        _CACHE[table_name] = pd.read_csv(io.BytesIO(obj_response['Body'].read()))
+        if key.endswith('.csv'):
+            _CACHE[key] = pd.read_csv(io.BytesIO(obj_response['Body'].read()))
+        else:
+            _CACHE[key] = obj_response['Body'].read().decode('utf-8')
 
     print(f"\n Loaded tables: {len(_CACHE)}")
     return dict(_CACHE)
 
 
-#returns a single table, fetching from S3 only on first access
-def load_s3_data(key: str) -> pd.DataFrame:
+#returns a single table (or read .md file), fetching from S3 only on first access
+def load_s3_data(key: str) -> pd.DataFrame | str:
     global _CACHE
 
     if key not in _CACHE:
         obj_response = s3_client.get_object(
             Bucket=BUCKET_NAME,
-            Key=f"{PREFIX}{key}.csv"
+            Key=f"{PREFIX}{key}"
         )
-        _CACHE[key] = pd.read_csv(io.BytesIO(obj_response['Body'].read()))
+        if (key.endswith(".csv")):
+            _CACHE[key] = pd.read_csv(io.BytesIO(obj_response['Body'].read()))
+        else:
+            _CACHE[key] = obj_response['Body'].read().decode('utf-8')
 
     return _CACHE[key]
 
 #tests
 if __name__ == "__main__":
     _start = time.perf_counter()
-    data = load_s3_data("customers")
+    data = load_s3_data("Políticas de envío.md")
     #data2 = load_all_s3_data()
 
-    resultado = data.head()
+    #.csv
+    #resultado = data.head()
+    #.json
+    print(data)
     elapsed = time.perf_counter() - _start
-    print(resultado[resultado["phone"] == "+57 300 133 8908"  ] )
+    #print(resultado[resultado["phone"] == "+57 300 133 8908"  ] )
     print(f"{elapsed:.3f}s\n")
     #Provisional results:
     #      - ~2.6s cold start (with warmp_up)
