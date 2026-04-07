@@ -1,4 +1,5 @@
 from core.data_store import load_s3_data
+from core.session_context import add_tool_trace
 from core.tools.inventory.search_product import (
 	_build_stock_lookup,
 	_normalize_text,
@@ -55,21 +56,38 @@ def check_stock(
 	top_k: int = 5,
 ):
 	"""
-	Lightweight stock lookup.
-	Supports search by:
-	- product_id (exact id)
-	- query by product name with 3 levels: exact, partial, fuzzy
+	Lookup stock availability for products using id or name matching.
 
-	Returns up to top_k records with minimal product and stock information.
+	Args:
+		query: Product name text (or numeric-like value interpreted as id if possible).
+		product_id: Optional product identifier for exact lookup.
+		top_k: Maximum number of records to return (clamped to 1..5).
+
+	Returns:
+		list[dict]: Stock-focused product payload with:
+			- product identity and match metadata (match_type, score)
+			- stock_qty, reserved_qty, availability_units
+			- is_available, low_stock_threshold, is_low_stock
+			- warehouse_locations
 	"""
+	input_data = {
+		"query": query,
+		"product_id": product_id,
+		"top_k": top_k,
+	}
+
+	def _trace_return(output: list[dict]) -> list[dict]:
+		add_tool_trace("check_stock", input_data, {"results": output})
+		return output
+
 	products = load_s3_data("products.csv")
 	if not isinstance(products, pd.DataFrame):
-		return []
+		return _trace_return([])
 
 	df = products.copy()
 	required = {"product_id", "category_id", "brand_id", "name", "active"}
 	if not required.issubset(df.columns):
-		return []
+		return _trace_return([])
 
 	df["product_id"] = pd.to_numeric(df["product_id"], errors="coerce")
 	df["category_id"] = pd.to_numeric(df["category_id"], errors="coerce")
@@ -87,35 +105,35 @@ def check_stock(
 	if target_pid is not None:
 		found = df[df["product_id"] == target_pid].copy().head(k)
 		if found.empty:
-			return []
+			return _trace_return([])
 		found["_score"] = 100.0
-		return _results_from_df(found, stock_lookup, "id", "_score")
+		return _trace_return(_results_from_df(found, stock_lookup, "id", "_score"))
 
 	# 2) Name-based lookup.
 	query_norm = _normalize_text(query)
 	if not query_norm:
-		return []
+		return _trace_return([])
 
 	exact = df[df["_name_norm"] == query_norm].copy()
 	if not exact.empty:
 		exact["_score"] = 100.0
 		top = exact.sort_values(by=["_score", "name"], ascending=[False, True]).head(k)
-		return _results_from_df(top, stock_lookup, "exact", "_score")
+		return _trace_return(_results_from_df(top, stock_lookup, "exact", "_score"))
 
 	partial = df[df["_name_norm"].str.contains(query_norm, na=False)].copy()
 	if not partial.empty:
 		partial["_score"] = partial["_name_norm"].apply(lambda name: _score_partial(query_norm, name))
 		top = partial.sort_values(by=["_score", "name"], ascending=[False, True]).head(k)
-		return _results_from_df(top, stock_lookup, "partial", "_score")
+		return _trace_return(_results_from_df(top, stock_lookup, "partial", "_score"))
 
 	fuzzy = df.copy()
 	fuzzy["_score"] = fuzzy["_name_norm"].apply(lambda name: _score_fuzzy(query_norm, name))
 	fuzzy = fuzzy[fuzzy["_score"] >= 60.0].copy()
 	if fuzzy.empty:
-		return []
+		return _trace_return([])
 
 	top = fuzzy.sort_values(by=["_score", "name"], ascending=[False, True]).head(k)
-	return _results_from_df(top, stock_lookup, "fuzzy", "_score")
+	return _trace_return(_results_from_df(top, stock_lookup, "fuzzy", "_score"))
   
 
 if __name__ == "__main__":

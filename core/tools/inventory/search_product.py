@@ -1,4 +1,5 @@
 from core.data_store import load_s3_data
+from core.session_context import add_tool_trace
 from strands import tool
 from difflib import SequenceMatcher
 from datetime import date
@@ -430,16 +431,42 @@ def search_product(
     top_k: int = 5
 ):
     """
-    Lightweight product search for agent routing/selection.
-    Supports:
-    - direct lookup by product_id
-    - name search with exact/partial/fuzzy matching
-    Returns up to top_k products with minimal availability and active promotions.
+    Search products for discovery and selection in 3 levels: exact, partial, fuzzy.
+
+    Args:
+        query: Product name text (or numeric-like string/int) used for search.
+            If product_id is not provided, query may also be interpreted as product id.
+        product_id: Optional direct product identifier for exact lookup.
+        filters: Optional constraints dict. Supported keys:
+            - category: category_id
+            - brand: brand_id
+            - price_min: minimum price
+            - price_max: maximum price
+            - available: boolean over products.active
+        top_k: Maximum number of results to return (clamped to 1..5).
+
+    Returns:
+        list[dict]: Lightweight product payload ordered by relevance, each item containing:
+            - identity: product_id, name, description, category_id, brand_id, active
+            - matching: match_type, score
+            - stock summary: stock_qty, reserved_qty, availability_units, is_available, is_low_stock
+            - promotion summary: has_promotion, promotions (active only)
     """
+    input_data = {
+        "query": query,
+        "product_id": product_id,
+        "filters": filters,
+        "top_k": top_k,
+    }
+
+    def _trace_return(output: list[dict]) -> list[dict]:
+        add_tool_trace("search_product", input_data, {"results": output})
+        return output
+
     all_products = load_s3_data("products.csv")
 
     if not isinstance(all_products, pd.DataFrame):
-        return []
+        return _trace_return([])
 
     if not isinstance(filters, dict):
         filters = {}
@@ -466,7 +493,7 @@ def search_product(
         "installation_notes",
     }
     if not required_product_columns.issubset(df.columns):
-        return []
+        return _trace_return([])
 
     df["product_id"] = pd.to_numeric(df["product_id"], errors="coerce")
     df["category_id"] = pd.to_numeric(df["category_id"], errors="coerce")
@@ -484,7 +511,7 @@ def search_product(
     )
 
     if df.empty:
-        return []
+        return _trace_return([])
 
     target_pid = _to_int(product_id)
     if target_pid is None:
@@ -494,19 +521,19 @@ def search_product(
     if target_pid is not None:
         found = df[df["product_id"] == target_pid].copy().head(k)
         if found.empty:
-            return []
+            return _trace_return([])
         found["_match_type"] = "id"
         found["_score"] = 100.0
-        return _build_search_results_min(
+        return _trace_return(_build_search_results_min(
             found,
             stock_lookup,
             product_promos,
             category_promos,
-        )
+        ))
 
     query_norm = _normalize_text(query)
     if not query_norm:
-        return []
+        return _trace_return([])
 
     # Level 1: Exact match
     exact = df[df["_name_norm"] == query_norm].copy()
@@ -514,12 +541,12 @@ def search_product(
         exact["_match_type"] = "exact"
         exact["_score"] = 100.0
         top = exact.sort_values(by=["_score", "name"], ascending=[False, True]).head(k)
-        return _build_search_results_min(
+        return _trace_return(_build_search_results_min(
             top,
             stock_lookup,
             product_promos,
             category_promos,
-        )
+        ))
 
     # Level 2: Partial match
     partial = df[df["_name_norm"].str.contains(query_norm, na=False)].copy()
@@ -527,28 +554,28 @@ def search_product(
         partial["_match_type"] = "partial"
         partial["_score"] = partial["_name_norm"].apply(lambda n: _score_partial(query_norm, n))
         top = partial.sort_values(by=["_score", "name"], ascending=[False, True]).head(k)
-        return _build_search_results_min(
+        return _trace_return(_build_search_results_min(
             top,
             stock_lookup,
             product_promos,
             category_promos,
-        )
+        ))
 
     # Level 3: Fuzzy match
     fuzzy = df.copy()
     fuzzy["_score"] = fuzzy["_name_norm"].apply(lambda n: _score_fuzzy(query_norm, n))
     fuzzy = fuzzy[fuzzy["_score"] >= 60.0].copy()
     if fuzzy.empty:
-        return []
+        return _trace_return([])
 
     fuzzy["_match_type"] = "fuzzy"
     top = fuzzy.sort_values(by=["_score", "name"], ascending=[False, True]).head(k)
-    return _build_search_results_min(
+    return _trace_return(_build_search_results_min(
         top,
         stock_lookup,
         product_promos,
         category_promos,
-    )
+    ))
 
 
 @tool
@@ -560,6 +587,15 @@ def search_products(
 ):
     """
     Compatibility alias for search_product.
+
+    Args:
+        query: Same as search_product.
+        product_id: Same as search_product.
+        filters: Same as search_product.
+        top_k: Same as search_product.
+
+    Returns:
+        list[dict]: Same output as search_product.
     """
     return search_product(
         query=query,

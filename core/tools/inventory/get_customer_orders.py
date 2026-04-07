@@ -15,8 +15,18 @@ def _clean_value(value: Any) -> Any:
 @tool
 def get_customer_orders() -> dict:
 	"""
-	Returns all orders for the authenticated customer in session context.
-	No input parameters are required.
+	Return all orders for the authenticated customer from session context.
+
+	Args:
+		None.
+
+	Returns:
+		dict: Fixed response structure:
+			- authenticated: bool
+			- customer_id: int | None
+			- orders: list[dict] with order fields + nested items
+			- reason: str | None
+		When not authenticated or data is unavailable, returns empty orders with a reason.
 	"""
 	input_data = {}
 
