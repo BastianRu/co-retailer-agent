@@ -23,7 +23,7 @@ def warmup_routers():
     print(f"✓ Warmup completado en {elapsed:.3f}s\n")
 
 #warm-up
-#warmup_routers()
+warmup_routers()
 
 for i in range(2):
     messsage = input("Mensaje: ")

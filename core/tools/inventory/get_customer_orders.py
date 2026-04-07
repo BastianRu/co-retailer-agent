@@ -1,0 +1,144 @@
+from core.data_store import load_s3_data
+import core.session_context as session_context
+from core.tools.inventory.search_product import _to_int
+from strands import tool
+import pandas as pd
+from typing import Any
+
+
+def _clean_value(value: Any) -> Any:
+	if pd.isna(value):
+		return None
+	return value
+
+
+@tool
+def get_customer_orders() -> dict:
+	"""
+	Returns all orders for the authenticated customer in session context.
+	No input parameters are required.
+	"""
+	input_data = {}
+
+	# Validate authenticated session from the shared context.
+	session_customer = session_context.get_session_customer()
+	if session_context._SESSION_CUSTOMER is None or session_customer is None:
+		output = {
+			"authenticated": False,
+			"customer_id": None,
+			"orders": [],
+			"reason": "customer not authenticated",
+		}
+		session_context.add_tool_trace("get_customer_orders", input_data, output)
+		return output
+
+	customer_id = _to_int(session_customer.get("customer_id"))
+	if customer_id is None:
+		output = {
+			"authenticated": False,
+			"customer_id": None,
+			"orders": [],
+			"reason": "invalid session customer_id",
+		}
+		session_context.add_tool_trace("get_customer_orders", input_data, output)
+		return output
+
+	orders_data = load_s3_data("orders.csv")
+	if not isinstance(orders_data, pd.DataFrame):
+		output = {
+			"authenticated": True,
+			"customer_id": customer_id,
+			"orders": [],
+			"reason": "orders table unavailable",
+		}
+		session_context.add_tool_trace("get_customer_orders", input_data, output)
+		return output
+
+	orders_df = orders_data.copy()
+	required_order_columns = {"order_id", "customer_id"}
+	if not required_order_columns.issubset(orders_df.columns):
+		output = {
+			"authenticated": True,
+			"customer_id": customer_id,
+			"orders": [],
+			"reason": "orders schema mismatch",
+		}
+		session_context.add_tool_trace("get_customer_orders", input_data, output)
+		return output
+
+	orders_df["_customer_id"] = orders_df["customer_id"].map(_to_int)
+	orders_df = orders_df[orders_df["_customer_id"] == customer_id].copy()
+
+	if orders_df.empty:
+		output = {
+			"authenticated": True,
+			"customer_id": customer_id,
+			"orders": [],
+			"reason": None,
+		}
+		session_context.add_tool_trace("get_customer_orders", input_data, output)
+		return output
+
+	items_by_order: dict[object, list[dict]] = {}
+	order_items_data = load_s3_data("order_items.csv")
+	if isinstance(order_items_data, pd.DataFrame) and not order_items_data.empty:
+		items_df = order_items_data.copy()
+		if {"order_id"}.issubset(items_df.columns):
+			item_fields = [
+				"item_id",
+				"product_id",
+				"qty",
+				"unit_price",
+				"warranty_expires_at",
+				"return_deadline",
+				"item_status",
+			]
+			present_item_fields = [field for field in item_fields if field in items_df.columns]
+
+			for order_id, group in items_df.groupby("order_id", dropna=False):
+				items_by_order[order_id] = [
+					{field: _clean_value(row[field]) for field in present_item_fields}
+					for _, row in group.iterrows()
+				]
+
+	if "order_date" in orders_df.columns:
+		orders_df["_order_date"] = pd.to_datetime(orders_df["order_date"], errors="coerce")
+		orders_df = orders_df.sort_values(by="_order_date", ascending=False, na_position="last")
+
+	response_orders: list[dict] = []
+	for _, row in orders_df.iterrows():
+		order = {
+			col: _clean_value(row[col])
+			for col in orders_df.columns
+			if not col.startswith("_")
+		}
+		order["items"] = items_by_order.get(row["order_id"], [])
+		response_orders.append(order)
+
+	output = {
+		"authenticated": True,
+		"customer_id": customer_id,
+		"orders": response_orders,
+		"reason": None,
+	}
+	session_context.add_tool_trace("get_customer_orders", input_data, output)
+	return output
+
+
+if __name__ == "__main__":
+      import time
+      session_context.set_session_customer(1001, "test_user")
+      s = time.perf_counter()
+      results = get_customer_orders()
+      for r in results["orders"]:
+         print(f"{r}\n")
+
+      f = time.perf_counter()
+      print(f"Time: {f - s}")
+      s = time.perf_counter()
+      results = get_customer_orders()
+
+      f = time.perf_counter()
+      print(f"Time (warm): {f - s}")
+      for r in results["orders"]:
+         print(f"{r}\n")

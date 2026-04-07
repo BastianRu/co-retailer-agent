@@ -14,8 +14,8 @@ PREFIX = ""                              # "" if root
 
 s3_client = boto3.client(
     's3',
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    #aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    #aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     region_name=os.getenv("AWS_REGION", "us-east-2")
 )
 
@@ -85,7 +85,7 @@ def get_s3_object_metadata(key: str) -> dict:
 #tests
 if __name__ == "__main__":
     _start = time.perf_counter()
-    data = load_s3_data("Políticas de envío.md")
+    data = load_s3_data("customers.csv")
     #data2 = load_all_s3_data()
 
     #.csv
