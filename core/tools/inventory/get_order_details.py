@@ -21,14 +21,14 @@ def _base_error(customer_id: int | None, reason: str, authenticated: bool) -> di
 		"order_id": None,
 		"order": {},
 		"items": [],
+		"shipping_address": None,
 		"reason": reason,
 	}
 
 
 @tool
 def get_order_details(order_id: int | None = None) -> dict:
-	"""
-	Return full details of one authenticated customer's order.
+	""", including shipping address.
 
 	Args:
 		order_id: Optional order identifier.
@@ -41,6 +41,8 @@ def get_order_details(order_id: int | None = None) -> dict:
 			- customer_id: int | None
 			- order_id: int | None
 			- order: dict with full orders.csv fields
+			- items: list[dict] with full order_items.csv fields for the order
+			- shipping_address: dict with delivery info (recipient, address, city, delivery_type)
 			- items: list[dict] with full order_items.csv fields for the order
 			- reason: str | None
 	"""
@@ -123,12 +125,40 @@ def get_order_details(order_id: int | None = None) -> dict:
 						if not col.startswith("_")
 					}
 					items_payload.append(item_payload)
+# Load shipping address information
+	shipping_address_payload = None
+	address_id = _to_int(row.get("address_id"))
+	delivery_method = _clean_value(row.get("delivery_method"))
+	
+	if address_id is not None:
+		addresses_data = load_s3_data("addresses.csv")
+		if isinstance(addresses_data, pd.DataFrame) and not addresses_data.empty:
+			addr_df = addresses_data.copy()
+			if "address_id" in addr_df.columns:
+				addr_df["_address_id"] = addr_df["address_id"].map(_to_int)
+				addr_match = addr_df[addr_df["_address_id"] == address_id].copy().head(1)
+				
+				if not addr_match.empty:
+					addr_row = addr_match.iloc[0]
+					shipping_address_payload = {
+						"address_id": address_id,
+						"recipient_name": _clean_value(addr_row.get("recipient_name")),
+						"street_address": _clean_value(addr_row.get("street_address")),
+						"city": _clean_value(addr_row.get("city")),
+						"state": _clean_value(addr_row.get("state")),
+						"postal_code": _clean_value(addr_row.get("postal_code")),
+						"country": _clean_value(addr_row.get("country")),
+						"delivery_type": "domicilio" if delivery_method == "home_delivery" else "punto de retiro" if delivery_method == "pickup_point" else delivery_method,
+						"pickup_point_name": _clean_value(addr_row.get("pickup_point_name")) if delivery_method == "pickup_point" else None,
+					}
 
 	output = {
 		"authenticated": True,
 		"customer_id": customer_id,
 		"order_id": resolved_order_id,
 		"order": order_payload,
+		"items": items_payload,
+		"shipping_address": shipping_addresr_payload,
 		"items": items_payload,
 		"reason": None,
 	}

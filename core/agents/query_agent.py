@@ -14,7 +14,7 @@ def build_bedrock_model() -> BedrockModel:
   return BedrockModel(
     model_id="mistral.ministral-3-8b-instruct",
     region_name=os.getenv("AWS_REGION", "us-east-2"),
-    temperature=0.2,
+    temperature=0,
     max_tokens=300,
     streaming=False
   )
@@ -200,7 +200,7 @@ Salida reescrita:
 Usuario actual: "dime dónde va"
 Memoria reciente: pedido 11222
 Salida reescrita:
-"El usuario quiere saber dónde va el pedido 11222"
+"Donde va el pedido 11222?"
 
 Usuario actual: "mi número es 3001234567"
 Salida:

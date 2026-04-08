@@ -1,12 +1,12 @@
-from core.agents.iventory_agent import solve_inventory_query
+from core.agents.inventory_agent import solve_inventory_query
 from core.session_context import reset_session, set_session_customer, get_tool_trace
 
 RUN_AUTH_REQUIRED = False
-RUN_ANSWER_PRODUCTS = True
+RUN_ANSWER_PRODUCTS = False
 RUN_ANSWER_ORDERS = False
 RUN_ANSWER_LOGISTICS = False
 RUN_ANSWER_RETURN_WARRANTY = False
-RUN_NO_DATA = False
+RUN_NO_DATA = True
 
 
 # -----------------------------
@@ -158,6 +158,9 @@ if RUN_ANSWER_RETURN_WARRANTY:
             print(f"Avg cycle (s): {summary['average_cycle_time']}")
             print(f"Per-call usage: {last_usage}")
         print("-------------------------------------")
+        print("Tool trace snapshot:")
+        print(get_tool_trace())
+
 
 
 if RUN_NO_DATA:
@@ -179,5 +182,3 @@ if RUN_NO_DATA:
         print("-------------------------------------")
 
 
-print("Tool trace snapshot:")
-print(get_tool_trace())

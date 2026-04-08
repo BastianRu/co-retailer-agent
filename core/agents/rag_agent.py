@@ -15,7 +15,7 @@ def build_bedrock_model() -> BedrockModel:
   return BedrockModel(
     model_id="mistral.ministral-3-8b-instruct",
     region_name=os.getenv("AWS_REGION", "us-east-2"),
-    temperature=0.2,
+    temperature=0,
     max_tokens=800,
     streaming=False
   )
@@ -81,7 +81,7 @@ def _parse_rag_result(raw: str) -> dict:
     "reason": reason,
   }
 
-def solve_query(input: str):
+def solve_rag_query(input: str):
   rag_agent = Agent(
         model=model,
         system_prompt=system_prompt,

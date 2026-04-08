@@ -16,7 +16,7 @@ def build_bedrock_model() -> BedrockModel:
   return BedrockModel(
     model_id="mistral.ministral-3-8b-instruct",
     region_name=os.getenv("AWS_REGION", "us-east-2"),
-    temperature=0.2,
+    temperature=0,
     max_tokens=350,
     streaming=False
   )
@@ -54,7 +54,7 @@ Criterios de salida:
 
 Responde breve, segura y sin adornos.
 
-Salida obligatoria: JSON válido y solo JSON.
+Salida obligatoria: JSON válido y solo JSON (Sin importar el mensaje).
 {
   "route": "AUTH_SUCCESS" | "AUTH_FAILED" | "AUTH_REQUIRED" | "BLOCK",
   "message": "respuesta breve para el usuario",
