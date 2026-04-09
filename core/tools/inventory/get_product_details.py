@@ -1,6 +1,6 @@
 from core.data_store import load_s3_data
 from core.session_context import add_tool_trace
-from core.tools.inventory.search_product import (
+from core.tools.inventory.search_products import (
 	_build_promotion_lookup,
 	_build_results,
 	_build_stock_lookup,
@@ -13,17 +13,24 @@ import pandas as pd
 @tool
 def get_product_details(product_id: int) -> dict:
 	"""
-	Get full product detail payload for a selected product id.
+	Return full catalog details for one exact product_id.
+
+	Use this only after a product has already been identified (usually via search_product).
+	This tool is intended for deep detail requests such as specifications, price,
+	warranty/return flags, shipping_days, and full promotion context.
+
+	Important usage rules for the caller:
+	- Do not call with missing/guessed product_id.
+	- Do not call for broad listing queries; use search_product instead.
+	- If the user only needs basic availability/listing, avoid this extra call.
 
 	Args:
-		product_id: Product identifier to fetch.
+		product_id: Product identifier for exact lookup.
 
 	Returns:
-		dict: Full product payload including:
-			- full product fields from products.csv
-			- stock summary and warehouse locations
-			- active/non-active promotions and promotion summary
-		Returns {} when product_id is invalid, not found, or required data is unavailable.
+		dict: Full product payload including base product fields, stock summary,
+			warehouse locations, promotion summary, and promotion details.
+			Returns {} when product_id is invalid, missing, or source data is unavailable.
 	"""
 	input_data = {"product_id": product_id}
 

@@ -1,4 +1,5 @@
-from core.agents.rag_agent import solve_query
+import time
+from core.agents.rag_agent import solve_rag_query
 from core.session_context import get_tool_trace
 
 RUN_ANSWER = True
@@ -40,7 +41,9 @@ block_cases = [
 
 if RUN_ANSWER:
     for i, case in enumerate(answer_cases):
-        response = solve_query(case)
+        start = time.perf_counter()
+        response = solve_rag_query(case)
+        elapsed = time.perf_counter() - start
         summary = response["response_data"].metrics.get_summary()
         last_usage = summary["agent_invocations"][-1]["usage"]
 
@@ -48,7 +51,7 @@ if RUN_ANSWER:
         print(f"Case {i}: expected=ANSWER route={response['route']}")
         print(f"Message: {response['message']}")
         print(f"Reason: {response['reason']}")
-        print(f"Avg cycle (s): {summary['average_cycle_time']}")
+        print(f"Request time (s): {elapsed:.6f}")
         print(f"Per-call usage: {last_usage}")
         print("-------------------------------------")
         print()
@@ -56,7 +59,9 @@ if RUN_ANSWER:
 
 if RUN_NO_CONTEXT:
     for i, case in enumerate(no_context_cases):
-        response = solve_query(case)
+        start = time.perf_counter()
+        response = solve_rag_query(case)
+        elapsed = time.perf_counter() - start
         summary = response["response_data"].metrics.get_summary()
         last_usage = summary["agent_invocations"][-1]["usage"]
 
@@ -64,14 +69,16 @@ if RUN_NO_CONTEXT:
         print(f"Case {i}: expected=NO_CONTEXT route={response['route']}")
         print(f"Message: {response['message']}")
         print(f"Reason: {response['reason']}")
-        print(f"Avg cycle (s): {summary['average_cycle_time']}")
+        print(f"Request time (s): {elapsed:.6f}")
         print(f"Per-call usage: {last_usage}")
         print("-------------------------------------")
 
 
 if RUN_BLOCK:
     for i, case in enumerate(block_cases):
-        response = solve_query(case)
+        start = time.perf_counter()
+        response = solve_rag_query(case)
+        elapsed = time.perf_counter() - start
         summary = response["response_data"].metrics.get_summary()
         last_usage = summary["agent_invocations"][-1]["usage"]
 
@@ -79,6 +86,6 @@ if RUN_BLOCK:
         print(f"Case {i}: expected=BLOCK route={response['route']}")
         print(f"Message: {response['message']}")
         print(f"Reason: {response['reason']}")
-        print(f"Avg cycle (s): {summary['average_cycle_time']}")
+        print(f"Request time (s): {elapsed:.6f}")
         print(f"Per-call usage: {last_usage}")
         print("-------------------------------------")

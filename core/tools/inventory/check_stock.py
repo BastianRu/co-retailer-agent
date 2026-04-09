@@ -1,6 +1,6 @@
 from core.data_store import load_s3_data
 from core.session_context import add_tool_trace
-from core.tools.inventory.search_product import (
+from core.tools.inventory.search_products import (
 	_build_stock_lookup,
 	_normalize_text,
 	_score_fuzzy,
@@ -56,19 +56,27 @@ def check_stock(
 	top_k: int = 5,
 ):
 	"""
-	Lookup stock availability for products using id or name matching.
+	Stock-focused lookup for already identified product queries.
+
+	Use this tool when the user explicitly asks about stock units, availability,
+	or warehouse distribution for a product. It is not a general discovery tool.
+	For broad catalog discovery (products/prices/promotions), prefer search_product first.
+
+	Important usage rules for the caller:
+	- Do not call this tool with route/control tokens (for example: "NO_DATA").
+	- Do not call this tool for shipping/order status.
+	- If search_product already provides enough availability data, avoid redundant calls.
 
 	Args:
-		query: Product name text (or numeric-like value interpreted as id if possible).
-		product_id: Optional product identifier for exact lookup.
-		top_k: Maximum number of records to return (clamped to 1..5).
+		query: Product text query. Can also be numeric-like text that may map to a product id.
+		product_id: Optional exact product identifier. Takes priority over fuzzy name matching.
+		top_k: Max number of results to return. Runtime clamps this value to 1..5.
 
 	Returns:
-		list[dict]: Stock-focused product payload with:
-			- product identity and match metadata (match_type, score)
-			- stock_qty, reserved_qty, availability_units
-			- is_available, low_stock_threshold, is_low_stock
-			- warehouse_locations
+		list[dict]: Ordered candidate products with stock-focused fields, including
+			product identity, match metadata (match_type/score), stock totals,
+			availability flags, low-stock flags, and warehouse_locations.
+			Returns [] when there is no match or required source data is unavailable.
 	"""
 	input_data = {
 		"query": query,

@@ -62,11 +62,15 @@ for i in range(2):
                         response = solve_rag_query(rewrited["message"])
                         print(response["message"])
                     case "POLICY":
+                        print(rewrited["message"])
                         response = solve_rag_query(rewrited["message"])
                         print(response["message"])
                     case "INVENTORY":
-                        response = solve_inventory_query(rewrited["message"])
+                        print("INV")
+                        print(rewrited["message"])
+                        response = solve_inventory_query(messsage)
                         print(response["message"])
+                        get_tool_trace()
                     case "AMBIGUOUS":
                         print("No pude clasificar con suficiente certeza la consulta publica.")
                     case _:

@@ -6,7 +6,7 @@ from strands import tool
 
 from core.data_store import load_s3_data
 import core.session_context as session_context
-from core.tools.inventory.search_product import _to_int
+from core.tools.inventory.search_products import _to_int
 
 
 def _clean_value(value: Any) -> Any:
@@ -86,22 +86,26 @@ def get_item_warranty(
 	product_id: int | None = None,
 ) -> dict:
 	"""
-	Check warranty coverage for one item within an authenticated customer's order.
+	Evaluate warranty coverage for one item in a customer's order.
+
+	Use this tool for warranty expiration and in-warranty checks on order items.
+	Requires authenticated session context.
 
 	Args:
 		order_id: Required order identifier.
-		item_id: Optional item identifier to target a specific line item.
-		product_id: Optional product identifier to target a line item by product.
-			When both item_id and product_id are provided, both are applied as filters.
+		item_id: Optional order line identifier.
+		product_id: Optional product identifier to disambiguate the line.
+			When both item_id and product_id are provided, both filters are applied.
 
 	Returns:
-		dict: Fixed response structure:
+		dict: Stable response payload with keys:
 			- authenticated, customer_id, order_id, item_id, product_id
 			- in_warranty: bool
 			- warranty_expires_at: str | None (YYYY-MM-DD)
 			- days_remaining: int | None
 			- item_status: str | None
 			- reason: str | None
+			When validation fails, in_warranty is false and reason explains the cause.
 	"""
 	input_data = {"order_id": order_id, "item_id": item_id, "product_id": product_id}
 

@@ -1,6 +1,6 @@
 from core.data_store import load_s3_data
 import core.session_context as session_context
-from core.tools.inventory.search_product import _to_int
+from core.tools.inventory.search_products import _to_int
 from strands import tool
 import pandas as pd
 from typing import Any
@@ -15,18 +15,19 @@ def _clean_value(value: Any) -> Any:
 @tool
 def get_customer_orders() -> dict:
 	"""
-	Return all orders for the authenticated customer from session context.
+	Return a summary list of orders for the authenticated customer.
 
-	Args:
-		None.
+	Use this tool when the user asks for their orders list or order history.
+	Returns only top-level order summary fields; use get_order_details for
+	full order contents, items, and shipping address.
 
 	Returns:
-		dict: Fixed response structure:
+		dict: Stable response payload with keys:
 			- authenticated: bool
 			- customer_id: int | None
-			- orders: list[dict] with order fields + nested items
+			- orders: list[dict] each with: order_id, order_date, status, total, payment_method
 			- reason: str | None
-		When not authenticated or data is unavailable, returns empty orders with a reason.
+			When auth or data checks fail, orders is [] and reason explains why.
 	"""
 	input_data = {}
 
@@ -89,40 +90,19 @@ def get_customer_orders() -> dict:
 		session_context.add_tool_trace("get_customer_orders", input_data, output)
 		return output
 
-	items_by_order: dict[object, list[dict]] = {}
-	order_items_data = load_s3_data("order_items.csv")
-	if isinstance(order_items_data, pd.DataFrame) and not order_items_data.empty:
-		items_df = order_items_data.copy()
-		if {"order_id"}.issubset(items_df.columns):
-			item_fields = [
-				"item_id",
-				"product_id",
-				"qty",
-				"unit_price",
-				"warranty_expires_at",
-				"return_deadline",
-				"item_status",
-			]
-			present_item_fields = [field for field in item_fields if field in items_df.columns]
-
-			for order_id, group in items_df.groupby("order_id", dropna=False):
-				items_by_order[order_id] = [
-					{field: _clean_value(row[field]) for field in present_item_fields}
-					for _, row in group.iterrows()
-				]
-
 	if "order_date" in orders_df.columns:
 		orders_df["_order_date"] = pd.to_datetime(orders_df["order_date"], errors="coerce")
 		orders_df = orders_df.sort_values(by="_order_date", ascending=False, na_position="last")
 
+	_SUMMARY_FIELDS = ["order_id", "order_date", "status", "total", "payment_method"]
+
 	response_orders: list[dict] = []
 	for _, row in orders_df.iterrows():
 		order = {
-			col: _clean_value(row[col])
-			for col in orders_df.columns
-			if not col.startswith("_")
+			field: _clean_value(row[field])
+			for field in _SUMMARY_FIELDS
+			if field in orders_df.columns
 		}
-		order["items"] = items_by_order.get(row["order_id"], [])
 		response_orders.append(order)
 
 	output = {

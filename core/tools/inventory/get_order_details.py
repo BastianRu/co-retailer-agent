@@ -5,13 +5,30 @@ from strands import tool
 
 from core.data_store import load_s3_data
 import core.session_context as session_context
-from core.tools.inventory.search_product import _to_int
+from core.tools.inventory.search_products import _to_int
 
 
 def _clean_value(value: Any) -> Any:
 	if pd.isna(value):
 		return None
 	return value
+
+
+def _should_exclude_field(col: str) -> bool:
+	"""Check if a field should be excluded from the payload."""
+	# Exclude by exact match or pattern
+	excluded_patterns = {
+		"notes",
+		"internal",
+		"private",
+		"admin",
+		"staff",
+		"comment",
+		"memo",
+		"remark",
+	}
+	col_lower = col.lower()
+	return any(pattern in col_lower for pattern in excluded_patterns)
 
 
 def _base_error(customer_id: int | None, reason: str, authenticated: bool) -> dict:
@@ -28,23 +45,31 @@ def _base_error(customer_id: int | None, reason: str, authenticated: bool) -> di
 
 @tool
 def get_order_details(order_id: int | None = None) -> dict:
-	""", including shipping address.
+	"""
+	Return full details for one authenticated customer's order.
+
+	Use this tool when the user asks about order contents, individual items, totals,
+	payment method, delivery address, or any field beyond the summary.
+	For just listing orders use get_customer_orders instead.
+	If order_id is omitted, the most recent order is used.
 
 	Args:
 		order_id: Optional order identifier.
-			- If provided, returns that specific order (must belong to authenticated customer).
-			- If omitted, returns the most recent order for the authenticated customer.
+			- If provided, it must belong to the authenticated customer.
+			- If omitted, the newest customer order is returned.
 
 	Returns:
-		dict: Fixed response structure:
+		dict: Stable response payload with keys:
 			- authenticated: bool
 			- customer_id: int | None
 			- order_id: int | None
-			- order: dict with full orders.csv fields
-			- items: list[dict] with full order_items.csv fields for the order
-			- shipping_address: dict with delivery info (recipient, address, city, delivery_type)
-			- items: list[dict] with full order_items.csv fields for the order
+			- order: dict with all order fields (date, status, total, payment_method, etc.)
+			- items: list[dict] with full item fields (product_id, qty, unit_price,
+			  warranty_expires_at, return_deadline, item_status, etc.)
+			- shipping_address: dict with delivery info (recipient, address, city,
+			  postal_code, country, delivery_type, pickup_point_name)
 			- reason: str | None
+			When validation fails, order/items are empty and reason explains the failure.
 	"""
 	input_data = {"order_id": order_id}
 
@@ -106,7 +131,7 @@ def get_order_details(order_id: int | None = None) -> dict:
 	order_payload = {
 		col: _clean_value(row[col])
 		for col in target.columns
-		if not col.startswith("_")
+		if not col.startswith("_") and not _should_exclude_field(col)
 	}
 
 	items_payload: list[dict] = []
@@ -122,7 +147,7 @@ def get_order_details(order_id: int | None = None) -> dict:
 					item_payload = {
 						col: _clean_value(item_row[col])
 						for col in items_df.columns
-						if not col.startswith("_")
+						if not col.startswith("_") and not _should_exclude_field(col)
 					}
 					items_payload.append(item_payload)
 # Load shipping address information
@@ -158,8 +183,7 @@ def get_order_details(order_id: int | None = None) -> dict:
 		"order_id": resolved_order_id,
 		"order": order_payload,
 		"items": items_payload,
-		"shipping_address": shipping_addresr_payload,
-		"items": items_payload,
+		"shipping_address": shipping_address_payload,
 		"reason": None,
 	}
 	session_context.add_tool_trace("get_order_details", input_data, output)

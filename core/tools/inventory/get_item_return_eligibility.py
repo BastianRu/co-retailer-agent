@@ -6,7 +6,7 @@ from strands import tool
 
 from core.data_store import load_s3_data
 import core.session_context as session_context
-from core.tools.inventory.search_product import _to_bool, _to_int
+from core.tools.inventory.search_products import _to_bool, _to_int
 
 
 def _clean_value(value: Any) -> Any:
@@ -87,16 +87,19 @@ def get_item_return_eligibility(
 	product_id: int | None = None,
 ) -> dict:
 	"""
-	Check return eligibility for one item within an authenticated customer's order.
+	Evaluate whether one order item is eligible for return.
+
+	Use this tool for return-window and return-policy checks on a specific customer order item.
+	Requires an authenticated session and an order that belongs to that customer.
 
 	Args:
 		order_id: Required order identifier.
-		item_id: Optional item identifier to target a specific line item.
-		product_id: Optional product identifier to target a line item by product.
-			When both item_id and product_id are provided, both are applied as filters.
+		item_id: Optional order line identifier.
+		product_id: Optional product identifier to disambiguate the line.
+			When both item_id and product_id are provided, both filters are applied.
 
 	Returns:
-		dict: Fixed response structure:
+		dict: Stable response payload with keys:
 			- authenticated, customer_id, order_id, item_id, product_id
 			- eligible_for_return: bool
 			- return_deadline: str | None (YYYY-MM-DD)
@@ -104,6 +107,7 @@ def get_item_return_eligibility(
 			- item_status: str | None
 			- is_final_sale: bool | None
 			- reason: str | None
+			When validation fails, eligibility is false and reason explains the cause.
 	"""
 	input_data = {"order_id": order_id, "item_id": item_id, "product_id": product_id}
 

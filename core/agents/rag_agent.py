@@ -16,7 +16,7 @@ def build_bedrock_model() -> BedrockModel:
     model_id="mistral.ministral-3-8b-instruct",
     region_name=os.getenv("AWS_REGION", "us-east-2"),
     temperature=0,
-    max_tokens=800,
+    max_tokens=1000,
     streaming=False
   )
 
@@ -34,7 +34,7 @@ Reglas minimas:
 Salida obligatoria: JSON valido y solo JSON.
 {
   "route": "ANSWER" | "NO_CONTEXT" | "BLOCK",
-  "message": "respuesta breve para el usuario",
+  "message": "respuesta para el usuario con la informacion solicitada",
   "reason": "explicacion breve"
 }
 """

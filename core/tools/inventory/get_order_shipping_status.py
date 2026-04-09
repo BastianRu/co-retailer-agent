@@ -5,7 +5,7 @@ from strands import tool
 
 from core.data_store import load_s3_data
 import core.session_context as session_context
-from core.tools.inventory.search_product import _to_int
+from core.tools.inventory.search_products import _to_int
 
 
 def _clean_value(value: Any) -> Any:
@@ -33,20 +33,24 @@ def _norm_status(value: object) -> str:
 @tool
 def get_order_shipping_status(order_id: int | None = None) -> dict:
 	"""
-	Return shipping and tracking status for one authenticated customer's order.
+	Return shipping status, shipment records, and tracking timeline for one customer order.
+
+	Use this tool for delivery progress questions (tracking, ETA, delivered vs in-transit).
+	If order_id is omitted, the most recent customer order is used.
 
 	Args:
 		order_id: Optional order identifier.
-			- If provided, resolves that order (must belong to authenticated customer).
-			- If omitted, resolves the most recent order.
+			- If provided, it must belong to the authenticated customer.
+			- If omitted, resolves the most recent customer order.
 
 	Returns:
-		dict: Fixed response structure:
+		dict: Stable response payload with keys:
 			- authenticated, customer_id, order_id
 			- status: normalized shipping summary (booleans, dates, ETA, tracking refs)
 			- shipments: list[dict] from shipments.csv for the order
 			- tracking_timeline: ordered list[dict] from tracking.csv
 			- reason: str | None
+			When auth/data validation fails, shipments/timeline are empty and reason is populated.
 	"""
 	input_data = {"order_id": order_id}
 
