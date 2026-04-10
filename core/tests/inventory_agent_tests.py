@@ -3,7 +3,7 @@ import time
 from core.agents.inventory_agent import solve_inventory_query
 from core.session_context import reset_session, set_session_customer, get_tool_trace
 
-CATALOG_CASES = True
+CATALOG_CASES = False
 ANSWER_ORDER_CASES = False
 ANSWER_LOGISTICS_CASES = False
 ANSWER_RETURN_WARRANTY_CASES = False
@@ -124,12 +124,12 @@ no_data_cases = [
     "muestrame los detalles de mi orden 999999",
 ]
 
-CUSTOM_CASES = False
+CUSTOM_CASES = True
 custom_cases = [
     #"dame los detalles del iphone 15 pro max",
     #"dame los detalles del monitor LG ultra wide",
-    #"que productos samsung tienen?",
-    "que celular recomiendas?"
+    "que productos samsung tienen?",
+    #"que celular recomiendas?"
 ]
 
 if CUSTOM_CASES:

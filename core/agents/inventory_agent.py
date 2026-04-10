@@ -174,7 +174,7 @@ Devuelve SIEMPRE JSON valido y SOLO JSON.
 Si la consulta menciona marca/producto (iphone, samsung, laptop, etc.) -> USA search_product.
 Si NO hay marca/producto claro (ej. "cuanto cuesta ese?") -> Devuelve NO_DATA pidiendo aclaración.
 
-===BÚSQUEDAS ESPECÍFICAS===
+===	EJEMPLOS ESPECÍFICOS ===
 - iphone/apple -> search_product("iphone")
 - samsung -> search_product("samsung")
 - laptop -> search_product("laptop")
@@ -185,6 +185,7 @@ Si NO hay marca/producto claro (ej. "cuanto cuesta ese?") -> Devuelve NO_DATA pi
 SI search_product DEVUELVE RESULTADOS (lista no vacía):
   -> Responde ANSWER con esos productos INMEDIATAMENTE.
   -> No esperes validación, no dudes, no busques confirmación adicional.
+	-> Si obtuviste resultados de una tool, SIEMPRE USALOS.
 
 SI search_product DEVUELVE LISTA VACÍA:
   -> Responde ANSWER diciendo "no está disponible".
@@ -225,28 +226,63 @@ IMPORTANTE: Devuelve SIEMPRE un JSON con estructura exactamente así:
 {
   "route": "ANSWER" o "NO_DATA",
   "message": "texto puro (STRING ÚNICAMENTE), nunca un objeto. Lista los productos con nombre, precio, disponibilidad. Una respuesta legible."
+	
 }
 
 REGLA DE ORO para message:
 - message SIEMPRE es un string de texto
 - Nunca un objeto { }
 - Nunca un array [ ]
-- Si hay múltiples productos, escribeUNO POR UNO en LÍNEAS SEPARADAS dentro del string: "Producto 1: ...\nProducto 2: ..."
+- Si hay múltiples productos, escribe UNO POR UNO en LÍNEAS SEPARADAS dentro del string: "Producto 1: ...\nProducto 2: ..."
 """
 
 _VALID_ROUTES = {"ANSWER", "NO_DATA", "BLOCK"}
 
 
 def _extract_code_block(raw: str) -> str:
+	raw = str(raw or "").strip()
+	match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, flags=re.IGNORECASE | re.DOTALL)
+	if match:
+		return match.group(1).strip()
 	if raw.startswith("```"):
-		raw = raw.strip("`")
-		raw = raw.replace("json", "", 1).strip()
+		# Best effort if closing fence is missing.
+		raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+		return raw.strip()
 	return raw
 
 
 def _parse_inventory_result(raw: str) -> dict:
 	route = "NO_DATA"
 	message = "No encontre datos suficientes para responder con precision."
+
+	def _extract_message_fallback(text: str) -> str | None:
+		message_key = re.search(r'"message"\s*:\s*"', text, flags=re.IGNORECASE)
+		if not message_key:
+			return None
+
+		index = message_key.end()
+		captured: list[str] = []
+		escaped = False
+		while index < len(text):
+			ch = text[index]
+			if escaped:
+				captured.append("\\" + ch)
+				escaped = False
+			elif ch == "\\":
+				escaped = True
+			elif ch == '"':
+				break
+			else:
+				captured.append(ch)
+			index += 1
+
+		if not captured:
+			return None
+
+		candidate = "".join(captured)
+		# Normalize common escaped sequences from LLM output.
+		candidate = candidate.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+		return candidate.strip() if candidate.strip() else None
 
 	try:
 		data = json.loads(raw)
@@ -274,11 +310,9 @@ def _parse_inventory_result(raw: str) -> dict:
 		if route_match:
 			route = route_match.group(1)
 
-		message_match = re.search(r'"message"\s*:\s*"([^"]+)"', raw, flags=re.IGNORECASE)
-		
-
-		if message_match:
-			message = message_match.group(1).strip()
+		message_from_raw = _extract_message_fallback(raw)
+		if message_from_raw:
+			message = message_from_raw
 		
 
 	return {
