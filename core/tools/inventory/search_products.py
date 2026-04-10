@@ -203,7 +203,6 @@ _IDENTITY_TEXT_FIELDS = [
 _IDENTITY_CORE_EXACT_FIELDS = [
     "brand_id",
     "category_id",
-    "active",
     "requires_installation",
 ]
 
@@ -261,7 +260,7 @@ def _same_product_identity(left: dict, right: dict) -> bool:
         and exact_avg >= 0.99
         and text_avg >= 0.90
         and name_sim >= 0.72
-        and price_sim >= 0.95
+        and price_sim >= 0.80
     )
 
 
@@ -330,7 +329,17 @@ def _pick_representative_text(rows: list[dict], field: str) -> object:
     return values[0]
 
 
-def _cluster_records(records: list[dict]) -> list[list[dict]]:
+def _is_exact_duplicate_candidate(left: dict, right: dict) -> bool:
+    return (
+        bool(_normalize_text(left.get("name")))
+        and _normalize_text(left.get("name")) == _normalize_text(right.get("name"))
+        and _normalize_text(left.get("description")) == _normalize_text(right.get("description"))
+        and _to_int(left.get("brand_id")) == _to_int(right.get("brand_id"))
+        and _to_int(left.get("category_id")) == _to_int(right.get("category_id"))
+    )
+
+
+def _cluster_records(records: list[dict], enable_identity_merge: bool = True) -> list[list[dict]]:
     if len(records) < 2:
         return [[record] for record in records]
 
@@ -350,7 +359,11 @@ def _cluster_records(records: list[dict]) -> list[list[dict]]:
 
     for left_index in range(len(records)):
         for right_index in range(left_index + 1, len(records)):
-            if _same_product_identity(records[left_index], records[right_index]):
+            if _is_exact_duplicate_candidate(records[left_index], records[right_index]):
+                union(left_index, right_index)
+                continue
+
+            if enable_identity_merge and _same_product_identity(records[left_index], records[right_index]):
                 union(left_index, right_index)
 
     grouped: dict[int, list[dict]] = {}
@@ -479,11 +492,11 @@ def _build_discovery_item(
     return item
 
 
-def _consolidate_product_candidates(df: pd.DataFrame) -> list[dict]:
+def _consolidate_product_candidates(df: pd.DataFrame, enable_identity_merge: bool = True) -> list[dict]:
     records = df.to_dict(orient="records")
     consolidated: list[dict] = []
 
-    for group in _cluster_records(records):
+    for group in _cluster_records(records, enable_identity_merge=enable_identity_merge):
         if len(group) == 1:
             row = dict(group[0])
             parsed_product_id = _to_int(row.get("product_id"))
@@ -736,6 +749,7 @@ def _build_results(
 
         if product_id is not None and product_id in stock_lookup:
             item.update(stock_lookup[product_id])
+            item.pop("warehouse_locations", None)
         else:
             item["stock_qty"] = 0
             item["reserved_qty"] = 0
@@ -743,7 +757,6 @@ def _build_results(
             item["is_available"] = False
             item["low_stock_threshold"] = None
             item["is_low_stock"] = False
-            item["warehouse_locations"] = []
 
         promotions_by_id: dict[str, dict] = {}
 
@@ -775,10 +788,8 @@ def _build_results(
 
         item["has_promotion"] = len(active_promotions) > 0
         item["promotions"] = active_promotions
-        item["promotions_other"] = inactive_promotions
         item["promotion_summary"] = {
             "active": len(active_promotions),
-            "non_active": len(inactive_promotions),
             "total": len(all_promotions),
         }
 
@@ -792,16 +803,35 @@ def _build_search_results_min(
     stock_lookup: dict[int, dict],
     product_promos: dict[int, list[dict]],
     category_promos: dict[int, list[dict]],
+    enable_identity_merge: bool = True,
 ) -> list[dict]:
     """
     Lightweight payload for product discovery.
     Includes minimal product identity + availability + active promo messages.
     """
-    consolidated_rows = _consolidate_product_candidates(df)
+    consolidated_rows = _consolidate_product_candidates(df, enable_identity_merge=enable_identity_merge)
     return [
         _build_discovery_item(row, stock_lookup, product_promos, category_promos)
         for row in consolidated_rows
     ]
+
+
+def _should_enable_identity_merge(query_norm: str, top_k: int) -> bool:
+    """
+    Uses verify_product_identity as a safety gate for advanced consolidation.
+    Keeps behavior robust if verification is unavailable.
+    """
+    try:
+        from core.tools.inventory.verify_product_identity import verify_product_identity
+
+        verification = verify_product_identity(query=query_norm, top_k=min(max(int(top_k), 1), 12))
+        if isinstance(verification, dict):
+            return bool(verification.get("is_same_product_identity"))
+    except Exception:
+        pass
+
+    # Fail-open to preserve previous behavior if verification cannot be executed.
+    return True
 
 @tool
 def search_product(
@@ -939,11 +969,13 @@ def search_product(
         partial["_match_type"] = "partial"
         partial["_score"] = partial["_name_norm"].apply(lambda n: _score_partial(query_norm, n))
         top = partial.sort_values(by=["_score", "name"], ascending=[False, True]).head(candidate_pool_size)
+        enable_identity_merge = _should_enable_identity_merge(query_norm, candidate_pool_size)
         return _trace_return(_build_search_results_min(
             top.head(candidate_pool_size),
             stock_lookup,
             product_promos,
             category_promos,
+            enable_identity_merge=enable_identity_merge,
         )[:k])
 
     # Level 2: Fuzzy match
@@ -956,11 +988,13 @@ def search_product(
 
     fuzzy["_match_type"] = "fuzzy"
     top = fuzzy.sort_values(by=["_score", "name"], ascending=[False, True]).head(candidate_pool_size)
+    enable_identity_merge = _should_enable_identity_merge(query_norm, candidate_pool_size)
     return _trace_return(_build_search_results_min(
         top,
         stock_lookup,
         product_promos,
         category_promos,
+        enable_identity_merge=enable_identity_merge,
     )[:k])
 
 

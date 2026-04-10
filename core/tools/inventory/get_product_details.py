@@ -8,31 +8,33 @@ from core.tools.inventory.search_products import (
 )
 from strands import tool
 import pandas as pd
+from typing import Optional
 
 
 @tool
-def get_product_details(product_id: int) -> dict:
+def get_product_details(product_id: int, product_ids: Optional[list] = None) -> dict:
 	"""
-	Return full catalog details for one exact product_id.
+	Return full catalog details for a product, with consolidated stock across all variants.
 
 	Use this only after a product has already been identified (usually via search_product).
 	This tool is intended for deep detail requests such as specifications, price,
 	warranty/return flags, shipping_days, and full promotion context.
 
 	Important usage rules for the caller:
+	- product_id: the representative product ID (e.g. first element of product_ids from search_product).
+	- product_ids: ALWAYS pass the full list of product_ids from search_product results to get consolidated stock.
 	- Do not call with missing/guessed product_id.
 	- Do not call for broad listing queries; use search_product instead.
-	- If the user only needs basic availability/listing, avoid this extra call.
 
 	Args:
-		product_id: Product identifier for exact lookup.
+		product_id: Representative product identifier for base detail lookup.
+		product_ids: Full list of variant product IDs (from search_product) for consolidated stock aggregation.
 
 	Returns:
-		dict: Full product payload including base product fields, stock summary,
-			warehouse locations, promotion summary, and promotion details.
+		dict: Full product payload with consolidated stock, specs, warranty, shipping, and active promotions.
 			Returns {} when product_id is invalid, missing, or source data is unavailable.
 	"""
-	input_data = {"product_id": product_id}
+	input_data = {"product_id": product_id, "product_ids": product_ids}
 
 	def _trace_return(output: dict) -> dict:
 		add_tool_trace("get_product_details", input_data, output)
@@ -79,7 +81,31 @@ def get_product_details(product_id: int) -> dict:
 	match["_match_type"] = "id"
 	match["_score"] = 100.0
 	details = _build_results(match, stock_lookup, product_promos, category_promos)
-	return _trace_return(details[0] if details else {})
+	if not details:
+		return _trace_return({})
+
+	result = details[0]
+
+	# Aggregate consolidated stock across all variant IDs if provided
+	all_pids = [_to_int(p) for p in (product_ids or [])] if product_ids else []
+	all_pids = [p for p in all_pids if p is not None]
+	if not all_pids:
+		all_pids = [pid]
+
+	if len(all_pids) > 1:
+		stock_total = sum(stock_lookup.get(p, {}).get("stock_qty", 0) for p in all_pids)
+		reserved_total = sum(stock_lookup.get(p, {}).get("reserved_qty", 0) for p in all_pids)
+		availability_total = stock_total - reserved_total
+		thresholds = [stock_lookup[p]["low_stock_threshold"] for p in all_pids if p in stock_lookup and stock_lookup[p].get("low_stock_threshold") is not None]
+		low_stock_threshold = min(thresholds) if thresholds else None
+		result["stock_qty"] = stock_total
+		result["reserved_qty"] = reserved_total
+		result["availability_units"] = availability_total
+		result["is_available"] = availability_total > 0
+		result["is_low_stock"] = low_stock_threshold is not None and availability_total <= low_stock_threshold
+		result["low_stock_threshold"] = low_stock_threshold
+
+	return _trace_return(result)
 
 
 if __name__ == "__main__":
