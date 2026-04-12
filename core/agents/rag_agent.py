@@ -1,6 +1,7 @@
 from strands.models.bedrock import BedrockModel
 from strands import Agent
 from core.tools.retrieval_context import retrieval_context
+from core.session_context import register_reset_callback
 from dotenv import load_dotenv
 import json
 import re
@@ -81,14 +82,33 @@ def _parse_rag_result(raw: str) -> dict:
     "reason": reason,
   }
 
+_rag_agent = None
+
+
+def _create_rag_agent():
+  return Agent(
+      model=model,
+      system_prompt=system_prompt,
+      tools=[retrieval_context],
+      callback_handler=None,
+  )
+
+
+def init_rag_agent():
+  global _rag_agent
+  _rag_agent = _create_rag_agent()
+
+
+def reset_rag_agent():
+  init_rag_agent()
+
+
+register_reset_callback(reset_rag_agent)
+init_rag_agent()
+
+
 def solve_rag_query(input: str):
-  rag_agent = Agent(
-        model=model,
-        system_prompt=system_prompt,
-        tools=[retrieval_context],
-        callback_handler=None,
-    )
-  response = rag_agent(input)
+  response = _rag_agent(input)
   raw = _extract_code_block(str(response).strip())
   result = _parse_rag_result(raw)
 

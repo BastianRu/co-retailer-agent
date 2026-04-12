@@ -124,12 +124,31 @@ no_data_cases = [
     "muestrame los detalles de mi orden 999999",
 ]
 
-CUSTOM_CASES = True
+CUSTOM_CASES = False
 custom_cases = [
     #"dame los detalles del iphone 15 pro max",
     #"dame los detalles del monitor LG ultra wide",
-    "que productos samsung tienen?",
-    #"que celular recomiendas?"
+    #"que productos samsung tienen?",
+    #"que celular recomiendas?",
+    "si"
+]
+
+# Test para ambigüedad excesiva
+AMBIGUITY_CASES = True
+ambiguity_test_cases = [
+    # Casos sin contexto (AGENT_HISTORY vacío)
+    ("Quiero información", []),
+    ("Necesito ayuda", []),
+    ("Tengo una pregunta", []),
+    
+    # Casos con múltiples agentes sin suficiente semántica
+    ("Eso", ["PUBLIC_INVENTORY", "RAG", "PRIVATE_INVENTORY"]),
+    ("Lo otro", ["PUBLIC_INVENTORY", "PRIVATE_INVENTORY"]),
+    
+    # Casos que SÍ deben ser FOLLOW_QUERY (tienen semántica)
+    ("Sí", ["PUBLIC_INVENTORY"]),
+    ("¿Y cuánto cuesta?", ["PUBLIC_INVENTORY"]),
+    ("¿Mi pedido?", ["RAG", "PRIVATE_INVENTORY"]),
 ]
 
 if CUSTOM_CASES:
@@ -237,6 +256,101 @@ if ANSWER_RETURN_WARRANTY_CASES:
         print("-------------------------------------")
     print("Tool trace snapshot:")
     #print(get_tool_trace())
+
+
+
+if NO_DATA_CASES:
+    reset_session()
+    set_session_customer(1292, "test_user_1292")
+
+    for i, case in enumerate(no_data_cases):
+        start = time.perf_counter()
+        response = solve_inventory_query(case, query_type="PRIVATE")
+        elapsed = time.perf_counter() - start
+
+        print(str(case))
+        print(f"Case {i}: expected=NO_DATA route={response['route']}")
+        print(f"Message: {response['message']}")
+        #print(f"Reason: {response['reason']}")
+        print(f"Request time (s): {elapsed:.6f}")
+        if response["response_data"] is not None:
+            summary = response["response_data"].metrics.get_summary()
+            last_usage = summary["agent_invocations"][-1]["usage"]
+            print(f"Per-call usage: {last_usage}")
+        print("-------------------------------------")
+
+
+# Test INPUT AGENT - AMBIGÜEDAD
+if AMBIGUITY_CASES:
+    from core.agents.input_agent import classify_input
+    from core.session_context import get_agent_history
+    
+    print("\n\n=== PRUEBAS DE AMBIGÜEDAD EN INPUT_AGENT ===\n")
+    
+    reset_session()
+    
+    for i, (message, history) in enumerate(ambiguity_test_cases):
+        # Simulamos inyectar la historia en el contexto
+        # (En la práctica, classify_input usa get_agent_history(), así que solo resetamos)
+        
+        start = time.perf_counter()
+        result = classify_input(message)
+        elapsed = time.perf_counter() - start
+        
+        print(f"Caso {i}: '{message}'")
+        print(f"  Route: {result['route']}")
+        print(f"  Follow Route: {result['follow_query_route']}")
+        print(f"  Message: {result['message']}")
+        print(f"  Reason: {result['reason']}")
+
+ORCHESTRATOR_TEST = True
+if ORCHESTRATOR_TEST:
+    from core.agent import create_agent
+    
+    print("\n\n=== PRUEBAS DE ORCHESTRATOR - CONVERSACIÓN COMPLETA ===\n")
+    
+    # Test 1: Ambigüedad en consulta inicial
+    print("--- Test 1: Ambigüedad sin contexto ---")
+    agent = create_agent()
+    response = agent("Quiero información")
+    print(f"User: 'Quiero información'")
+    print(f"Agent: {response}")
+    print()
+    
+    # Test 2: Consulta clara → FOLLOW_QUERY con continuidad
+    print("--- Test 2: Continuidad después de producto ---")  
+    agent = create_agent()
+    response = agent("¿Hay stock del Samsung Galaxy S24 Ultra?")
+    print(f"User: '¿Hay stock del Samsung Galaxy S24 Ultra?'")
+    print(f"Agent: {response}")
+    print()
+    
+    response = agent("¿Y cuánto cuesta?")
+    print(f"User: '¿Y cuánto cuesta?'")
+    print(f"Agent: {response}")
+    print()
+    
+    # Test 3: Consulta PRIVATE sin autenticación
+    print("--- Test 3: PRIVATE_INVENTORY sin autenticación (debe pedir AUTH) ---")
+    agent = create_agent()
+    response = agent("¿Cuál es el estado de mi pedido?")
+    print(f"User: '¿Cuál es el estado de mi pedido?'")
+    print(f"Agent: {response}")
+    print()
+    
+    # Test 4: FOLLOW_QUERY a PRIVATE_INVENTORY sin auth
+    print("--- Test 4: Continuidad a PRIVATE_INVENTORY sin autenticación ---")
+    agent = create_agent()
+    response = agent("Dame detalles del iphone 14")
+    print(f"User: '¿Tienes iphone 14?'")
+    print(f"Agent: {response}")
+    print()
+    
+    response = agent("Quiero los detalles de mi orden")
+    print(f"User: 'Quiero los detalles de mi orden'")
+    print(f"Agent: {response}")
+    print()
+
 
 
 

@@ -1,121 +1,172 @@
 from core.session_context import (
-    get_tool_trace, 
-    set_session_customer, reset_session,
-    get_session_customer)
+    get_tool_trace,
+    set_session_customer,
+    reset_session,
+    get_session_customer,
+    add_agent_to_history,
+    get_agent_history,
+    reset_agent_memory,
+)
+
 from core.routers.query_router import classify_query_route
-from core.agents.query_agent import rewrite_query
+from core.agents.input_agent import classify_input
 from core.agents.rag_agent import solve_rag_query
 from core.agents.inventory_agent import solve_inventory_query
 from core.agents.auth_agent import auth_agent_loop
 from core.data_store import load_all_s3_data
+
 import time
 
+
+_WARMED_UP = False
+
+
 def warmup_routers():
-    print("Precalentando routers...")
-    _start = time.perf_counter()
-    
+    global _WARMED_UP
+    if _WARMED_UP:
+        return
+
     try:
-        classify_query_route("ok")  # throwaway agent instance
-    except:
-        pass
-    
-    try:
-        rewrite_query("ok") # throwaway agent instance
-    except:
-        pass    
-    try:
-        load_all_s3_data() #load all S3 dataset
-    except:
+        classify_query_route("ok")
+    except Exception:
         pass
 
+    try:
+        classify_input("ok")
+    except Exception:
+        pass
 
-    elapsed = time.perf_counter() - _start
-    print(f"✓ Warmup completado en {elapsed:.3f}s\n")
+    try:
+        load_all_s3_data()
+    except Exception:
+        pass
 
-#warm-up
-warmup_routers()
+    try:
+        solve_rag_query("ok")
+    except Exception:
+        pass
 
-for i in range(2):
-    messsage = input("Mensaje: ")
-    script_start = time.perf_counter()
+    try:
+        solve_inventory_query("ok")
+    except Exception:
+        pass
 
-    rewrited = rewrite_query(messsage)
-    summary = rewrited["response_data"].metrics.get_summary()
-    last_usage = summary["agent_invocations"][-1]["usage"]
-    #print(f"Per-call usage: {last_usage}")
-    print("1st routing OK")
-    match rewrited["route"]:
-        case "QUERY_REWRITE":
-          query_route = classify_query_route(rewrited["message"])
+    _WARMED_UP = True
 
-          summary = query_route["response_data"].metrics.get_summary()
-          last_usage = summary["agent_invocations"][-1]["usage"]
 
-          
-          print("2nd routing OK")
+class AgentResponse:
+    def __init__(self, content: str):
+        self.content = content
 
-          print(query_route["auth_route"])  
-          match query_route["auth_route"]:
-            case "PUBLIC":
-                match query_route["query_route"]:
-                    case "FAQ":
-                        response = solve_rag_query(rewrited["message"])
-                        print(response["message"])
-                    case "POLICY":
-                        print(rewrited["message"])
-                        response = solve_rag_query(rewrited["message"])
-                        print(response["message"])
-                    case "INVENTORY":
-                        print("INV")
-                        print(rewrited["message"])
-                        response = solve_inventory_query(messsage)
-                        print(response["message"])
-                        get_tool_trace()
-                    case "AMBIGUOUS":
-                        print("No pude clasificar con suficiente certeza la consulta publica.")
-                    case _:
-                        print("No pude determinar el tipo de consulta publica.")
-            case "PRIVATE":
-                if get_session_customer() is None:
-                    response = auth_agent_loop(rewrited["message"])
-                    print(response["message"])
-                    for _ in range(2):
-                        auth_message = input("Mensaje: ")
-                        response = auth_agent_loop(auth_message)
-                        print(response["message"])
-                        if response["stop"] is True:
-                            break
-                    if response["authenticated"] is False:
-                        print("No fue posible autenticarte, intentalo de nuevo mas tarde.")
-                        reset_session()
-                        break
+    def __str__(self):
+        return self.content
 
-                response = solve_inventory_query(rewrited["message"])
-                print(response["message"])
-                print(get_tool_trace())
-                
-            case "AMBIGUOUS":
-                print("pregunta ambigua")
-            case _:
-                print("No pude determinar si la consulta es publica o privada.")
-        case "AUTH_ATTEMPT":
-            response = auth_agent_loop(rewrited["message"])
-            print(response["message"])
-        case "DIRECT_ANSWER":
-            print(rewrited["message"])
-        case "BLOCK":
-            print(rewrited["message"])
-        case _:
-            print("No pude procesar la solicitud en este momento.")
+
+def create_agent(streaming: bool = False):
+    warmup_routers()
+
+    reset_agent_memory()
+    reset_session()
+
+    def agent(message: str):
+        try:
+            routed = classify_input(message)
+
+            route = routed.get("route")
+            user_message = routed.get("message", message)
+
+            if route == "QUERY":
+                query_route = classify_query_route(user_message)
+
+                auth_route = query_route.get("auth_route")
+                query_type = query_route.get("query_route")
+
+                if auth_route == "PUBLIC":
+                    if query_type in ("FAQ", "POLICY"):
+                        response = solve_rag_query(user_message)
+                        add_agent_to_history("RAG")
+                        return AgentResponse(response["message"])
+
+                    if query_type == "INVENTORY":
+                        response = solve_inventory_query(user_message)
+                        add_agent_to_history("PUBLIC_INVENTORY")
+                        return AgentResponse(response["message"])
+
+                    return AgentResponse(
+                        "No pude clasificar con suficiente certeza tu consulta pública."
+                    )
+
+                if auth_route == "PRIVATE":
+                    if get_session_customer() is None:                        
+                        response = auth_agent_loop(user_message)
+                        add_agent_to_history("AUTH")
+                        return AgentResponse(response["message"])
+
+                    response = solve_inventory_query(user_message, query_type="PRIVATE")
+                    add_agent_to_history("PRIVATE_INVENTORY")
+                    return AgentResponse(response["message"])
+
+                return AgentResponse(
+                    "No pude determinar si la consulta es pública o privada."
+                )
+
+            if route == "FOLLOW_QUERY":
+                follow_route = routed.get("follow_query_route")
+
+                if follow_route == "PRIVATE_INVENTORY":
+                    if get_session_customer() is None:
+                        response = auth_agent_loop(user_message)
+                        add_agent_to_history("AUTH")
+                        return AgentResponse(response["message"])
                     
-total_elapsed = time.perf_counter() - script_start
-print(f"TOTAL_PROCESS_SECONDS: {total_elapsed:.3f}")
-print("\n\n")
-reset_session()
+                    response = solve_inventory_query(message, query_type="PRIVATE")
+                    add_agent_to_history("PRIVATE_INVENTORY")
+                    return AgentResponse(response["message"])
 
+                if follow_route in ("PUBLIC_INVENTORY", "INVENTORY"):
+                    response = solve_inventory_query(message)
+                    add_agent_to_history("PUBLIC_INVENTORY")
+                    return AgentResponse(response["message"])
 
+                if follow_route == "RAG":
+                    response = solve_rag_query(message)
+                    add_agent_to_history("RAG")
+                    return AgentResponse(response["message"])
 
-  
+                if follow_route == "AUTH":
+                    response = auth_agent_loop(user_message)
+                    add_agent_to_history("AUTH")
+                    return AgentResponse(response["message"])
 
+                return AgentResponse(
+                    "No pude determinar a qué se refiere tu consulta de seguimiento."
+                )
 
-  
+            if route == "AUTH_ATTEMPT":
+                response = auth_agent_loop(user_message)
+                add_agent_to_history("AUTH")
+
+                if response.get("authenticated"):
+                    print("auth ok")
+
+                return AgentResponse(response["message"])
+
+            if route == "DIRECT_ANSWER":
+                return AgentResponse(routed["message"])
+
+            if route == "BLOCK":
+                return AgentResponse(routed["message"])
+
+            print(get_agent_history())
+            return AgentResponse("No pude procesar la solicitud en este momento.")
+        
+        except Exception:
+            return AgentResponse("Ocurrió un error procesando tu solicitud.")
+
+        
+
+    def reset_memory():
+        reset_agent_memory()
+
+    agent.reset_memory = reset_memory
+    return agent

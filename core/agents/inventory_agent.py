@@ -1,5 +1,6 @@
 from strands.models.bedrock import BedrockModel
 from strands import Agent
+from core.session_context import register_reset_callback
 from dotenv import load_dotenv
 import json
 import os
@@ -337,22 +338,48 @@ _PRIVATE_TOOLS = [
 ]
 
 
-def solve_inventory_query(input: str, query_type: str = "PUBLIC"):
-	if query_type == "PRIVATE":
-		system_prompt = private_system_prompt
-		tools = _PRIVATE_TOOLS
-	else:
-		system_prompt = public_system_prompt
-		tools = _PUBLIC_TOOLS
+_public_agent = None
+_private_agent = None
 
-	inventory_agent = Agent(
+
+def _create_public_agent():
+	return Agent(
 		model=model,
-		system_prompt=system_prompt,
-		tools=tools,
+		system_prompt=public_system_prompt,
+		tools=_PUBLIC_TOOLS,
 		callback_handler=None,
 	)
 
-	response = inventory_agent(input)
+
+def _create_private_agent():
+	return Agent(
+		model=model,
+		system_prompt=private_system_prompt,
+		tools=_PRIVATE_TOOLS,
+		callback_handler=None,
+	)
+
+
+def init_inventory_agents():
+	global _public_agent, _private_agent
+	_public_agent = _create_public_agent()
+	_private_agent = _create_private_agent()
+
+
+def reset_inventory_agents():
+	init_inventory_agents()
+
+
+register_reset_callback(reset_inventory_agents)
+
+#init agents
+init_inventory_agents()
+
+
+def solve_inventory_query(input: str, query_type: str = "PUBLIC"):
+	agent = _private_agent if query_type == "PRIVATE" else _public_agent
+
+	response = agent(input)
 	raw = _extract_code_block(str(response).strip())
 	result = _parse_inventory_result(raw)
 
