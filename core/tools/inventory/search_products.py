@@ -1,5 +1,5 @@
 from core.data_store import load_s3_data
-from core.session_context import add_tool_trace
+from core.session_context import add_tool_trace, get_handle_dataset_inconsistencies
 from strands import tool
 from difflib import SequenceMatcher
 from datetime import date
@@ -530,6 +530,156 @@ def _consolidate_product_candidates(df: pd.DataFrame, enable_identity_merge: boo
     return consolidated
 
 
+def _build_discovery_results_from_rows(
+    rows: list[dict],
+    stock_lookup: dict[int, dict],
+    product_promos: dict[int, list[dict]],
+    category_promos: dict[int, list[dict]],
+) -> list[dict]:
+    return [
+        _build_discovery_item(row, stock_lookup, product_promos, category_promos)
+        for row in rows
+    ]
+
+
+def _dedupe_adjacent_name_tokens(name: object) -> str:
+    tokens = str(name or "").strip().split()
+    deduped: list[str] = []
+    for token in tokens:
+        if deduped and _normalize_text(token) == _normalize_text(deduped[-1]):
+            continue
+        deduped.append(token)
+    return " ".join(deduped).strip()
+
+
+def _is_supported_canonical_name(canonical_name: object, group: list[dict]) -> bool:
+    normalized_canonical = _normalize_text(canonical_name)
+    if not normalized_canonical:
+        return False
+
+    candidate_names = [str(row.get("name") or "").strip() for row in group if str(row.get("name") or "").strip()]
+    if normalized_canonical in {_normalize_text(name) for name in candidate_names}:
+        return True
+
+    return any(
+        normalized_canonical == _normalize_text(_dedupe_adjacent_name_tokens(name))
+        for name in candidate_names
+    )
+
+
+def _merge_group_records(
+    group: list[dict],
+    representative_product_id: int | None = None,
+    canonical_name: str | None = None,
+) -> dict:
+    ordered_group = sorted(group, key=lambda row: (-float(row.get("_score", 0.0)), str(row.get("name", ""))))
+
+    representative = None
+    if representative_product_id is not None:
+        for row in ordered_group:
+            if _to_int(row.get("product_id")) == representative_product_id:
+                representative = dict(row)
+                break
+
+    if representative is None:
+        representative = dict(ordered_group[0])
+
+    product_ids = [parsed for parsed in (_to_int(row.get("product_id")) for row in ordered_group) if parsed is not None]
+    numeric_prices = [
+        price
+        for price in (_to_float(row.get("price")) for row in ordered_group)
+        if price is not None
+    ]
+
+    representative["product_ids"] = product_ids
+    representative["merged_product_count"] = len(ordered_group)
+    representative["description"] = _pick_representative_text(ordered_group, "description")
+    representative["specifications"] = _pick_representative_text(ordered_group, "specifications")
+    representative["installation_notes"] = _pick_representative_text(ordered_group, "installation_notes")
+    representative["_score"] = max(float(row.get("_score", 0.0)) for row in ordered_group)
+
+    if canonical_name and _is_supported_canonical_name(canonical_name, ordered_group):
+        representative["name"] = canonical_name.strip()
+    elif len(ordered_group) > 1:
+        representative["name"] = _build_consensus_name([row.get("name") for row in ordered_group])
+
+    if numeric_prices:
+        representative["price_min"] = min(numeric_prices)
+        representative["price_max"] = max(numeric_prices)
+        representative["price"] = representative["price_min"]
+
+    return representative
+
+
+def _consolidate_candidate_pool(query_norm: str, df: pd.DataFrame) -> list[dict]:
+    records = df.to_dict(orient="records")
+    if len(records) < 2:
+        return _consolidate_product_candidates(df, enable_identity_merge=False)
+
+    try:
+        from core.tools.inventory.consolidate_product_candidates import group_product_candidates
+
+        group_specs = group_product_candidates(query=query_norm, candidates=records)
+    except Exception:
+        group_specs = None
+
+    if not group_specs:
+        return _consolidate_product_candidates(df, enable_identity_merge=True)
+
+    candidates_by_id = {
+        parsed_product_id: record
+        for record in records
+        if (parsed_product_id := _to_int(record.get("product_id"))) is not None
+    }
+    ordered_product_ids = [
+        parsed_product_id
+        for record in records
+        if (parsed_product_id := _to_int(record.get("product_id"))) is not None
+    ]
+
+    assigned_product_ids: set[int] = set()
+    consolidated_rows: list[dict] = []
+
+    for group_spec in group_specs:
+        group_product_ids: list[int] = []
+        for product_id in group_spec.get("product_ids", []):
+            parsed_product_id = _to_int(product_id)
+            if parsed_product_id is None:
+                continue
+            if parsed_product_id not in candidates_by_id:
+                continue
+            if parsed_product_id in assigned_product_ids:
+                continue
+            group_product_ids.append(parsed_product_id)
+
+        if not group_product_ids:
+            continue
+
+        group_set = set(group_product_ids)
+        group_rows = [candidates_by_id[product_id] for product_id in ordered_product_ids if product_id in group_set]
+        if not group_rows:
+            continue
+
+        assigned_product_ids.update(group_product_ids)
+        consolidated_rows.append(
+            _merge_group_records(
+                group_rows,
+                representative_product_id=_to_int(group_spec.get("representative_product_id")),
+                canonical_name=group_spec.get("canonical_name"),
+            )
+        )
+
+    for product_id in ordered_product_ids:
+        if product_id in assigned_product_ids:
+            continue
+        consolidated_rows.append(_merge_group_records([candidates_by_id[product_id]]))
+
+    return sorted(
+        consolidated_rows,
+        key=lambda row: (-float(row.get("_score", 0.0)), str(row.get("name", ""))),
+    )
+
+
 def _build_stock_lookup() -> dict[int, dict]:
     stock_data = load_s3_data("stock.csv")
     if not isinstance(stock_data, pd.DataFrame) or stock_data.empty:
@@ -810,28 +960,26 @@ def _build_search_results_min(
     Includes minimal product identity + availability + active promo messages.
     """
     consolidated_rows = _consolidate_product_candidates(df, enable_identity_merge=enable_identity_merge)
-    return [
-        _build_discovery_item(row, stock_lookup, product_promos, category_promos)
-        for row in consolidated_rows
-    ]
+    return _build_discovery_results_from_rows(
+        consolidated_rows,
+        stock_lookup,
+        product_promos,
+        category_promos,
+    )
 
 
-def _should_enable_identity_merge(query_norm: str, top_k: int) -> bool:
-    """
-    Uses verify_product_identity as a safety gate for advanced consolidation.
-    Keeps behavior robust if verification is unavailable.
-    """
-    try:
-        from core.tools.inventory.verify_product_identity import verify_product_identity
-
-        verification = verify_product_identity(query=query_norm, top_k=min(max(int(top_k), 1), 12))
-        if isinstance(verification, dict):
-            return bool(verification.get("is_same_product_identity"))
-    except Exception:
-        pass
-
-    # Fail-open to preserve previous behavior if verification cannot be executed.
-    return True
+def _build_search_results_raw(
+    df: pd.DataFrame,
+    stock_lookup: dict[int, dict],
+    product_promos: dict[int, list[dict]],
+    category_promos: dict[int, list[dict]],
+) -> list[dict]:
+    return _build_discovery_results_from_rows(
+        df.to_dict(orient="records"),
+        stock_lookup,
+        product_promos,
+        category_promos,
+    )
 
 @tool
 def search_product(
@@ -868,10 +1016,11 @@ def search_product(
     Returns:
         list[dict]: Relevance-ordered product summaries with identity fields,
             match metadata, stock summary, and promotion flags/details.
-            Likely duplicate rows for the same logical product are merged before
-            returning results. Merged rows aggregate stock, expose `product_ids`,
-            and when prices differ they return `price_min` / `price_max` instead
-            of a single exact price.
+            When dataset inconsistency handling is enabled for the current
+            session, likely duplicate rows for the same logical product are
+            merged before returning results. Merged rows aggregate stock,
+            expose `product_ids`, and when prices differ they return
+            `price_min` / `price_max` instead of a single exact price.
             Key fields usually used by agents:
             - name, product_id, product_ids
             - availability_units, is_available, is_low_stock
@@ -952,7 +1101,7 @@ def search_product(
             return _trace_return([])
         found["_match_type"] = "id"
         found["_score"] = 100.0
-        return _trace_return(_build_search_results_min(
+        return _trace_return(_build_search_results_raw(
             found,
             stock_lookup,
             product_promos,
@@ -969,14 +1118,22 @@ def search_product(
         partial["_match_type"] = "partial"
         partial["_score"] = partial["_name_norm"].apply(lambda n: _score_partial(query_norm, n))
         top = partial.sort_values(by=["_score", "name"], ascending=[False, True]).head(candidate_pool_size)
-        enable_identity_merge = _should_enable_identity_merge(query_norm, candidate_pool_size)
-        return _trace_return(_build_search_results_min(
-            top.head(candidate_pool_size),
-            stock_lookup,
-            product_promos,
-            category_promos,
-            enable_identity_merge=enable_identity_merge,
-        )[:k])
+        if get_handle_dataset_inconsistencies():
+            rows = _consolidate_candidate_pool(query_norm, top)
+            results = _build_discovery_results_from_rows(
+                rows,
+                stock_lookup,
+                product_promos,
+                category_promos,
+            )
+        else:
+            results = _build_search_results_raw(
+                top,
+                stock_lookup,
+                product_promos,
+                category_promos,
+            )
+        return _trace_return(results[:k])
 
     # Level 2: Fuzzy match
     fuzzy = df.copy()
@@ -988,14 +1145,22 @@ def search_product(
 
     fuzzy["_match_type"] = "fuzzy"
     top = fuzzy.sort_values(by=["_score", "name"], ascending=[False, True]).head(candidate_pool_size)
-    enable_identity_merge = _should_enable_identity_merge(query_norm, candidate_pool_size)
-    return _trace_return(_build_search_results_min(
-        top,
-        stock_lookup,
-        product_promos,
-        category_promos,
-        enable_identity_merge=enable_identity_merge,
-    )[:k])
+    if get_handle_dataset_inconsistencies():
+        rows = _consolidate_candidate_pool(query_norm, top)
+        results = _build_discovery_results_from_rows(
+            rows,
+            stock_lookup,
+            product_promos,
+            category_promos,
+        )
+    else:
+        results = _build_search_results_raw(
+            top,
+            stock_lookup,
+            product_promos,
+            category_promos,
+        )
+    return _trace_return(results[:k])
 
 
 @tool
@@ -1031,16 +1196,11 @@ def search_products(
 if __name__ == "__main__":
     import time
     s = time.perf_counter()
-    results = search_product("Samsung")
+    results = search_product("Iphone")
     for r in results:
       print(f"{r}\n")
     f = time.perf_counter()
     print(f"Time: {f - s}")
-    s = time.perf_counter()
-    results = search_product("Samsung")
-    for r in results:
-      print(f"{r}\n")
-    f = time.perf_counter()
-    print(f"Time (warm): {f - s}")
+    
     
 

@@ -22,6 +22,125 @@ def build_bedrock_model() -> BedrockModel:
 
 model = build_bedrock_model()
 
+_FOLLOW_CONTINUITY_TOKENS = {
+  "si", "sí", "ok", "dale", "va", "aja", "ajá", "eso", "ese", "esa", "el", "la",
+  "primero", "segunda", "segundo", "tercero", "otro", "otra", "antes", "mismo", "misma",
+}
+
+_FOLLOW_ROUTE_ALLOWED = {"PUBLIC_INVENTORY", "PRIVATE_INVENTORY", "INVENTORY", "RAG", "AUTH"}
+
+_SMALL_TALK_PATTERNS = [
+  r"^hola+\b",
+  r"^buen(as|os)?\b",
+  r"^gracias\b",
+  r"^bye\b",
+  r"^chao\b",
+  r"^adios\b",
+  r"^adiós\b",
+]
+
+
+def _normalize_history_route(route: str | None) -> str | None:
+  if route is None:
+    return None
+  normalized = str(route).strip().upper()
+  if normalized in {"INVENTORY", "PUBLIC", "PUBLIC_INVENTORY"}:
+    return "PUBLIC_INVENTORY"
+  if normalized in {"PRIVATE", "PRIVATE_INVENTORY"}:
+    return "PRIVATE_INVENTORY"
+  if normalized in {"FAQ", "POLICY", "RAG"}:
+    return "RAG"
+  if normalized == "AUTH":
+    return "AUTH"
+  return None
+
+
+def _looks_like_follow_up(
+  message: str,
+  last_agent_message: str | None,
+  user_messages: list | None,
+) -> bool:
+  msg = (message or "").strip().lower()
+  if not msg:
+    return False
+
+  short_contextual = len(msg.split()) <= 4 and any(token in msg for token in _FOLLOW_CONTINUITY_TOKENS)
+  anaphora = bool(re.search(r"\b(ese|esa|eso|el primero|el segundo|el otro|la otra|de antes)\b", msg))
+  connective = bool(re.search(r"^(y|entonces|tambien|también)\b", msg))
+  has_history_messages = bool(user_messages and len(user_messages) >= 2)
+  last_message_had_list = bool(last_agent_message and re.search(r"\b(1\.|2\.|producto|pedido)\b", last_agent_message.lower()))
+
+  return short_contextual or anaphora or connective or (has_history_messages and last_message_had_list and len(msg.split()) <= 6)
+
+
+def _infer_follow_query_route(message: str, agent_history: list | None) -> str | None:
+  msg = (message or "").lower()
+  history = [h for h in (agent_history or []) if h]
+
+  if re.search(r"\b(cedula|cédula|dni|identif|autent|telefono|teléfono|numero|número)\b", msg):
+    return "AUTH"
+
+  if re.search(r"\b(pedido|orden|tracking|historial|envio de mi|envío de mi|mi compra|reembolso|subtotal|iva|total)\b", msg):
+    if any(_normalize_history_route(h) == "PRIVATE_INVENTORY" for h in history):
+      return "PRIVATE_INVENTORY"
+
+  if re.search(r"\b(politica|política|garantia|garantía|condicion|condición|cubre|devolucion|devolución|reembolso)\b", msg):
+    if any(_normalize_history_route(h) == "RAG" for h in history):
+      return "RAG"
+
+  if re.search(r"\b(producto|precio|stock|disponib|catalogo|catálogo|primero|segundo|tercero)\b", msg):
+    if any(_normalize_history_route(h) == "PUBLIC_INVENTORY" for h in history):
+      return "PUBLIC_INVENTORY"
+
+  for past in reversed(history):
+    normalized = _normalize_history_route(past)
+    if normalized is not None:
+      return normalized
+  return None
+
+
+def _post_process_routing(
+  message: str,
+  action: str,
+  follow_query_route: str | None,
+  reason: str,
+  last_agent_message: str | None,
+  agent_history: list | None,
+  user_messages: list | None,
+) -> tuple[str, str | None, str]:
+  msg = (message or "").strip().lower()
+
+  is_small_talk = any(re.search(pattern, msg) for pattern in _SMALL_TALK_PATTERNS)
+  normalized_fqr = None
+  if follow_query_route and str(follow_query_route).strip().upper() in _FOLLOW_ROUTE_ALLOWED:
+    normalized_fqr = _normalize_history_route(str(follow_query_route).strip().upper())
+
+  follow_like = _looks_like_follow_up(message, last_agent_message, user_messages)
+  inferred_fqr = _infer_follow_query_route(message, agent_history)
+  has_history = bool(agent_history)
+
+  if action == "UNKNOWN":
+    if follow_like and has_history and inferred_fqr:
+      return "FOLLOW_QUERY", inferred_fqr, "fallback_follow_query_from_rules"
+    return "QUERY", None, "fallback_query_from_rules"
+
+  if action == "FOLLOW_QUERY":
+    if not has_history:
+      return "QUERY", None, "follow_without_history_fallback_query"
+    if normalized_fqr:
+      return "FOLLOW_QUERY", normalized_fqr, reason
+    if inferred_fqr:
+      return "FOLLOW_QUERY", inferred_fqr, "follow_query_route_inferred_from_rules"
+    return "DIRECT_ANSWER", None, "follow_ambiguous_needs_clarification"
+
+  if action == "QUERY" and follow_like and has_history and inferred_fqr:
+    return "FOLLOW_QUERY", inferred_fqr, "query_overridden_to_follow_by_rules"
+
+  if action == "DIRECT_ANSWER" and follow_like and has_history and inferred_fqr and not is_small_talk:
+    return "FOLLOW_QUERY", inferred_fqr, "direct_answer_overridden_to_follow_by_rules"
+
+  return action, None if action != "FOLLOW_QUERY" else normalized_fqr, reason
+
 system_prompt = """
 Eres INPUT_AGENT, el primer analizador conversacional de un agente de atención para e-commerce.
 
@@ -157,8 +276,18 @@ Puedes usar:
 
 especialmente:
 - AGENT_HISTORY (array ordenado de agentes usados en la sesión)
+- USER_MESSAGES (array cronológico de mensajes del usuario en la sesión)
+- LAST_AGENT_MESSAGE (última respuesta textual emitida por el agente)
 
-Usa esta información solo para decidir si el mensaje parece continuidad.
+Usa estas señales para decidir QUERY vs FOLLOW_QUERY:
+- QUERY: la intención actual se entiende sola sin depender del último intercambio.
+- FOLLOW_QUERY: la intención depende del contexto conversacional previo, especialmente de LAST_AGENT_MESSAGE o de USER_MESSAGES recientes.
+
+Reglas prácticas con memoria extendida:
+- Si el usuario responde con referencias como "sí", "eso", "el primero", "y cuánto" y encaja con LAST_AGENT_MESSAGE, favorece FOLLOW_QUERY.
+- Si la consulta actual introduce una intención independiente que no depende de la respuesta previa, favorece QUERY.
+- Si USER_MESSAGES muestra que el usuario ya venía en el mismo hilo y el mensaje actual es corto/contextual, favorece FOLLOW_QUERY.
+- Si no hay contexto suficiente para identificar continuidad con certeza, usa DIRECT_ANSWER pidiendo aclaración.
 
 Ejemplo:
 - Mensaje actual: "sí"
@@ -334,6 +463,8 @@ Prioriza este orden:
 Si dudas entre QUERY y FOLLOW_QUERY:
 - elige QUERY si la consulta se entiende completamente sola
 - elige FOLLOW_QUERY si la consulta depende del contexto previo y AGENT_HISTORY no está vacío
+- usa LAST_AGENT_MESSAGE como evidencia principal de continuidad inmediata
+- usa USER_MESSAGES para validar continuidad de hilo cuando la frase actual es breve o ambigua
 
 Si dudas entre DIRECT_ANSWER y FOLLOW_QUERY:
 - elige FOLLOW_QUERY si parece continuidad, AGENT_HISTORY no está vacío, y puedes identificar el agente destino
@@ -352,15 +483,31 @@ No agregues texto fuera del JSON.
 """
 
 
-def classify_input(input: str):
+def classify_input(
+  input: str,
+  last_agent_message: str | None = None,
+  agent_history: list | None = None,
+  user_messages: list | None = None,
+):
   query_agent = Agent(
     model=model,
     system_prompt=system_prompt,
     callback_handler=None,
   )
-  
-  agent_history = get_agent_history()
-  prompt = f"Mensaje del usuario: {input}\nEstado: AGENT_HISTORY = {agent_history}"
+
+  if agent_history is None:
+    agent_history = get_agent_history()
+  if user_messages is None:
+    user_messages = []
+  if last_agent_message is None:
+    last_agent_message = ""
+
+  prompt = (
+    f"Mensaje del usuario: {input}\n"
+    f"Estado: AGENT_HISTORY = {agent_history}\n"
+    f"Estado: USER_MESSAGES = {user_messages}\n"
+    f"Estado: LAST_AGENT_MESSAGE = {last_agent_message}"
+  )
 
   response = query_agent(prompt)
   raw = str(response).strip()
@@ -398,6 +545,21 @@ def classify_input(input: str):
       reason = reason_match.group(1).strip()
     if fqr_match and fqr_match.group(1).strip().upper() in {"PUBLIC_INVENTORY", "PRIVATE_INVENTORY", "INVENTORY", "RAG", "AUTH"}:
       follow_query_route = fqr_match.group(1).strip().upper()
+
+  action, follow_query_route, reason = _post_process_routing(
+    message=input,
+    action=action,
+    follow_query_route=follow_query_route,
+    reason=reason,
+    last_agent_message=last_agent_message,
+    agent_history=agent_history,
+    user_messages=user_messages,
+  )
+
+  if action == "DIRECT_ANSWER" and not message:
+    message = "¿Te refieres a productos, pedidos o políticas?"
+  if action in {"QUERY", "FOLLOW_QUERY", "AUTH_ATTEMPT"} and not message:
+    message = input
 
   return {
     "route": action,

@@ -3,7 +3,7 @@ import time
 from core.agents.inventory_agent import solve_inventory_query
 from core.session_context import reset_session, set_session_customer, get_tool_trace
 
-CATALOG_CASES = False
+CATALOG_CASES = True
 ANSWER_ORDER_CASES = False
 ANSWER_LOGISTICS_CASES = False
 ANSWER_RETURN_WARRANTY_CASES = False
@@ -134,7 +134,7 @@ custom_cases = [
 ]
 
 # Test para ambigüedad excesiva
-AMBIGUITY_CASES = True
+AMBIGUITY_CASES = False
 ambiguity_test_cases = [
     # Casos sin contexto (AGENT_HISTORY vacío)
     ("Quiero información", []),
@@ -303,7 +303,7 @@ if AMBIGUITY_CASES:
         print(f"  Message: {result['message']}")
         print(f"  Reason: {result['reason']}")
 
-ORCHESTRATOR_TEST = True
+ORCHESTRATOR_TEST = False
 if ORCHESTRATOR_TEST:
     from core.agent import create_agent
     

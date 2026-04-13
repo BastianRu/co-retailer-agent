@@ -26,7 +26,6 @@ def build_bedrock_model() -> BedrockModel:
 		streaming=False,
 	)
 
-
 model = build_bedrock_model()
 
 
@@ -75,6 +74,9 @@ Si la respuesta depende de datos del negocio, usa tools en este mismo turno.
 
 - get_item_warranty:
 	valida cobertura de garantia de un item comprado y su vigencia.
+
+- get_product_details:
+	usar solo si piden detalle de un product_id concreto de una orden.
 
 ========================
 3) ESTRATEGIA DE EJECUCION
@@ -198,6 +200,17 @@ SI search_product DEVUELVE LISTA VACÍA:
 - Ambiguas (sin producto claro): pide aclaración en UNA sola frase.
 - No puedes agregar características técnicas si no vienen en los datos de la herramienta.
 - No uses conocimiento general del producto.
+- Nunca inventes contenido de caja, accesorios incluidos, pasos de activación, compatibilidad, rankings, comparaciones o beneficios que no vengan explícitamente de las tools.
+- Si el usuario pregunta "qué incluye" y las tools no traen ese dato, responde únicamente que ese detalle no está disponible en el catálogo.
+- Si el usuario pregunta "qué tal ese" o pide una recomendación, resume solo con precio, disponibilidad, descripción y especificaciones explícitas de las tools.
+- Nunca menciones productos que no hayan sido devueltos por search_product o get_product_details.
+- Si solo hay un producto disponible, no inventes una segunda opción.
+- Si una tool devuelve price_min/price_max, debes responder con rango y nunca convertirlo en un precio único.
+- Evita adjetivos evaluativos o persuasivos como "excelente", "premium", "ideal", "mejor opción" o similares, salvo que aparezcan literalmente en los datos de la tool.
+- No des consejos externos como "consulta con el vendedor" o "revisa al momento de la compra" si ese contenido no viene de las tools.
+- En comparaciones o recomendaciones, justifica usando solo campos explícitos de las tools y no inferencias como ecosistema, productividad, calidad fotográfica o perfil de usuario si esos conceptos no vienen textual o directamente de specs/description.
+- Si el usuario pregunta por "el mejor" y la tool solo devolvió un producto, responde que es el único disponible y lista sus datos; no afirmes que es el más reciente ni el mejor salvo que eso aparezca literalmente en la tool.
+- En recomendaciones con varios productos, usa formulaciones neutrales como "opciones disponibles" o "productos disponibles" y evita conclusiones valorativas no explícitas.
 
 - Si el usuario pide "detalles", "información", "especificaciones":
   → SIEMPRE usar get_product_details
@@ -212,10 +225,13 @@ SI search_product DEVUELVE LISTA VACÍA:
 	- Preguntas de recomendación NUNCA pueden devolver NO_DATA.
 
 - Si hay productos disponibles:
-  → SIEMPRE recomendar al menos uno.
+	→ SIEMPRE recomendar al menos uno entre los productos devueltos por las tools.
 
 - Si hay varios:
   → máximo 2 opciones.
+
+- Si hay uno solo:
+	→ recomienda solo ese.
 
 ===ESTILO===
 - Factual, datos exactos de tools, sin suposiciones.
@@ -335,6 +351,7 @@ _PRIVATE_TOOLS = [
 	get_order_shipping_status,
 	get_item_return_eligibility,
 	get_item_warranty,
+	get_product_details,
 ]
 
 
@@ -378,6 +395,15 @@ init_inventory_agents()
 
 def solve_inventory_query(input: str, query_type: str = "PUBLIC"):
 	agent = _private_agent if query_type == "PRIVATE" else _public_agent
+	if agent is None:
+		init_inventory_agents()
+		agent = _private_agent if query_type == "PRIVATE" else _public_agent
+		if agent is None:
+			return {
+				"route": "NO_DATA",
+				"message": "No pude inicializar el agente de inventario.",
+				"response_data": None,
+			}
 
 	response = agent(input)
 	raw = _extract_code_block(str(response).strip())

@@ -1,5 +1,5 @@
 from core.agents.input_agent import classify_input
-
+from core.session_context import resolve_active_entity, update_dialog_state, clear_dialog_memory
 
 RUN_DIRECT_ANSWER = False  
 RUN_BLOCK = False
@@ -150,13 +150,14 @@ continuity_with_history_cases = [
 	("vuelve a mostrarme lo de antes", ["RAG", "INVENTORY"], "FOLLOW_QUERY", "INVENTORY"),
 ]
 
-def format_with_history(message, agent_history):
-	return f"Mensaje del usuario: {message}\nEstado: AGENT_HISTORY = {agent_history}"
-
 if RUN_CONTINUITY_WITH_HISTORY:
 	for i, (case, history, expected, expected_fqr) in enumerate(continuity_with_history_cases):
-		prompt = format_with_history(case, history)
-		response = classify_input(prompt)
+		response = classify_input(
+			case,
+			agent_history=history,
+			user_messages=["consulta anterior"],
+			last_agent_message="Te comparto opciones: 1. opcion A 2. opcion B",
+		)
 		summary = response["response_data"].metrics.get_summary()
 		last_usage = summary["agent_invocations"][-1]["usage"]
 		print(f"Input: {case} | AGENT_HISTORY: {history}")
@@ -185,8 +186,12 @@ ambiguous_with_history_cases = [
 
 if RUN_AMBIGUOUS_WITH_HISTORY:
 	for i, (case, history, expected) in enumerate(ambiguous_with_history_cases):
-		prompt = format_with_history(case, history)
-		response = classify_input(prompt)
+		response = classify_input(
+			case,
+			agent_history=history,
+			user_messages=["consulta anterior"],
+			last_agent_message="Te comparto opciones: 1. opcion A 2. opcion B",
+		)
 		summary = response["response_data"].metrics.get_summary()
 		last_usage = summary["agent_invocations"][-1]["usage"]
 		print(f"Input: {case} | AGENT_HISTORY: {history}")
@@ -197,3 +202,30 @@ if RUN_AMBIGUOUS_WITH_HISTORY:
 		print(f"Avg cycle (s): {summary['average_cycle_time']}")
 		print(f"Per-call usage: {last_usage}")
 		print("-------------------------------------")
+
+
+def test_entity_resolver():
+    # Simula lista de productos
+    update_dialog_state(
+        active_entity_type="product",
+        candidate_entities=[
+            {"id": "p1", "name": "Samsung Galaxy"},
+            {"id": "p2", "name": "iPhone 13"},
+            {"id": "p3", "name": "Air Fryer Oster"},
+        ]
+    )
+    # Ordinal
+    r1 = resolve_active_entity("el primero", None)
+    assert r1["resolved"] and r1["entity_id"] == "p1"
+    # Nombre
+    r2 = resolve_active_entity("quiero el iPhone 13", None)
+    assert r2["resolved"] and r2["entity_id"] == "p2"
+    # Anafórica
+    r3 = resolve_active_entity("ese", None)
+    assert r3["resolved"]
+    # Ambiguo
+    update_dialog_state(candidate_entities=[{"id": "p1", "name": "Samsung Galaxy"}, {"id": "p2", "name": "iPhone 13"}])
+    r4 = resolve_active_entity("no ese no, el otro", None)
+    assert not r4["resolved"] and r4["clarification_options"]
+    clear_dialog_memory()
+    print("Entity resolver tests passed.")
