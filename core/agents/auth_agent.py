@@ -74,6 +74,104 @@ Reglas finales:
 _VALID_ROUTES = {"AUTH_SUCCESS", "AUTH_FAILED", "AUTH_REQUIRED", "BLOCK"}
 
 
+def _normalize_text(value: str) -> str:
+  text = str(value or "").strip().lower()
+  text = text.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+  return text
+
+
+def _format_phone_identifier(digits: str) -> str | None:
+  cleaned = re.sub(r"\D", "", digits or "")
+  if cleaned.startswith("57") and len(cleaned) == 12:
+    cleaned = cleaned[2:]
+  if len(cleaned) != 10:
+    return None
+  return f"+57 {cleaned[:3]} {cleaned[3:6]} {cleaned[6:]}"
+
+
+def _extract_direct_auth_candidates(message: str) -> list[tuple[str, str]]:
+  normalized = _normalize_text(message)
+  groups = re.findall(r"\d+", str(message or ""))
+  significant_groups = [group for group in groups if len(group) >= 4]
+
+  if not significant_groups:
+    return []
+
+  if len(significant_groups) > 1:
+    return []
+
+  digits = "".join(groups)
+  candidates: list[tuple[str, str]] = []
+
+  if re.search(r"\b(cedula|dni|cc|documento)\b", normalized):
+    candidates.append((re.sub(r"\D", "", digits), "dni"))
+  elif re.search(r"\b(telefono|celular|numero|phone|movil)\b", normalized):
+    formatted_phone = _format_phone_identifier(digits)
+    if formatted_phone:
+      candidates.append((formatted_phone, "phone"))
+  else:
+    cleaned_digits = re.sub(r"\D", "", digits)
+    if cleaned_digits:
+      candidates.append((cleaned_digits, "dni"))
+    formatted_phone = _format_phone_identifier(digits)
+    if formatted_phone:
+      candidates.append((formatted_phone, "phone"))
+
+  deduped: list[tuple[str, str]] = []
+  seen: set[tuple[str, str]] = set()
+  for candidate in candidates:
+    if candidate in seen:
+      continue
+    seen.add(candidate)
+    deduped.append(candidate)
+  return deduped
+
+
+def _build_direct_auth_response(identifier_type: str, tool_output: dict) -> dict:
+  if tool_output.get("authenticated"):
+    display_name = str(tool_output.get("display_name") or "cliente").strip()
+    return {
+      "route": "AUTH_SUCCESS",
+      "message": f"Hola {display_name}, ¿en qué puedo ayudarte?",
+      "reason": "direct_identifier_match",
+      "authenticated": True,
+      "stop": True,
+      "session_customer": get_session_customer(),
+      "response_data": None,
+    }
+
+  if identifier_type == "phone":
+    message = "El número proporcionado no coincide con ningún cliente registrado."
+  else:
+    message = "No se encontró coincidencia con el DNI proporcionado. Verifica los datos e intenta nuevamente."
+
+  return {
+    "route": "AUTH_FAILED",
+    "message": message,
+    "reason": str(tool_output.get("reason") or "direct_identifier_match_failed"),
+    "authenticated": False,
+    "stop": False,
+    "session_customer": get_session_customer(),
+    "response_data": None,
+  }
+
+
+def _try_direct_auth(message: str) -> dict | None:
+  candidates = _extract_direct_auth_candidates(message)
+  if not candidates:
+    return None
+
+  last_failure = None
+  for identifier, identifier_type in candidates:
+    tool_output = auth_user(identifier=identifier, identifier_type=identifier_type)
+    response = _build_direct_auth_response(identifier_type, tool_output)
+    if response["authenticated"]:
+      return response
+    last_failure = response
+
+  return last_failure
+
+
 def _extract_code_block(raw: str) -> str:
   if raw.startswith("```"):
     raw = raw.strip("`")
@@ -136,6 +234,10 @@ def auth_agent_loop(input: str):
       "session_customer": existing_customer,
       "response_data": None,
     }
+
+  direct_auth_result = _try_direct_auth(input)
+  if direct_auth_result is not None:
+    return direct_auth_result
 
   auth_agent = Agent(
     model=model,

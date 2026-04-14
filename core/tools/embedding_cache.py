@@ -22,13 +22,13 @@ def get_s3_etag_hash(filename: str) -> str:
     return etag
 
 def _normalize_doc_name(doc_name: str) -> str:
-    # 1) quita extensión .md si viene
+   
     base = Path(doc_name).stem
 
-    # 2) elimina tildes/acentos: Política -> Politica
+    
     no_accents = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
 
-    # 3) deja solo letras, numeros, guion y underscore
+    
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", no_accents).strip("_")
 
     return safe or "document"

@@ -11,6 +11,7 @@ _AGENT_HISTORY = []
 _RESET_CALLBACKS = []
 _LAST_AGENT_MESSAGE = None
 _USER_MESSAGES = []
+_CONVERSATION_WINDOW = []
 _HANDLE_DATASET_INCONSISTENCIES = False
 
 # Dialog state for robust continuity
@@ -20,12 +21,22 @@ _DEFAULT_DIALOG_STATE = {
     "active_entity_id": None,  # id or None
     "candidate_entities": [],  # [{'id':..., 'name':...}, ...]
     "last_list_context": None,  # 'products' | 'orders' | ...
+    "last_resolved_query": None,
     "pending_clarification": False,
+    "pending_auth_route": None,
+    "pending_auth_message": None,
     "last_user_intent": None,  # QUERY | FOLLOW_QUERY | AUTH_ATTEMPT | SMALL_TALK
     "turn_index": 0,
     "timestamp": None,
 }
 _DIALOG_STATE = copy.deepcopy(_DEFAULT_DIALOG_STATE)
+
+
+def _append_conversation_event(role: str, content: str | None):
+    text = "" if content is None else str(content)
+    _CONVERSATION_WINDOW.append({"role": role, "content": text})
+    if len(_CONVERSATION_WINDOW) > 20:
+        del _CONVERSATION_WINDOW[:-20]
 
  
 #tool trace management
@@ -77,6 +88,13 @@ def reset_session():
     global _TOOL_TRACE, _SESSION_CUSTOMER, _LAST_AGENT_MESSAGE
     _TOOL_TRACE.clear()
     _SESSION_CUSTOMER = None
+    _LAST_AGENT_MESSAGE = None
+    _USER_MESSAGES.clear()
+    _AGENT_HISTORY.clear()
+    _CONVERSATION_WINDOW.clear()
+    clear_dialog_memory()
+    for cb in _RESET_CALLBACKS:
+        cb()
     
 
 
@@ -84,6 +102,8 @@ def reset_session():
 def set_last_agent_message(message: str | None):
     global _LAST_AGENT_MESSAGE
     _LAST_AGENT_MESSAGE = message
+    if message is not None:
+        _append_conversation_event("assistant", message)
     return _LAST_AGENT_MESSAGE
 
 def get_last_agent_message() -> str | None:
@@ -91,10 +111,18 @@ def get_last_agent_message() -> str | None:
 
 def add_user_message(message: str):
     _USER_MESSAGES.append(message)
+    _append_conversation_event("user", message)
     return len(_USER_MESSAGES)
 
 def get_user_messages() -> list[str]:
     return list(_USER_MESSAGES)
+
+
+def get_conversation_window(limit: int | None = None) -> list[dict]:
+    window = list(_CONVERSATION_WINDOW)
+    if limit is None or limit <= 0:
+        return window
+    return window[-limit:]
 
 # Dialog state management
 def get_dialog_state() -> dict:
@@ -267,6 +295,7 @@ def reset_agent_memory():
     _LAST_AGENT_MESSAGE = None
     _USER_MESSAGES.clear()
     _AGENT_HISTORY.clear()
+    _CONVERSATION_WINDOW.clear()
     clear_dialog_memory()
     for cb in _RESET_CALLBACKS:
         cb()

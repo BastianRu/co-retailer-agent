@@ -1,6 +1,6 @@
 from strands.models.bedrock import BedrockModel
 from strands import Agent
-from core.session_context import register_reset_callback
+from core.session_context import register_reset_callback, get_tool_trace_length, get_tool_trace_since
 from dotenv import load_dotenv
 import json
 import os
@@ -22,7 +22,7 @@ def build_bedrock_model() -> BedrockModel:
 		model_id="mistral.ministral-3-8b-instruct",
 		region_name=os.getenv("AWS_REGION", "us-east-2"),
 		temperature=0,
-		max_tokens=1800,
+		max_tokens=2000,
 		streaming=False,
 	)
 
@@ -165,95 +165,82 @@ Devuelve SIEMPRE JSON valido y SOLO JSON:
 
 public_system_prompt = """
 Eres INVENTORY_AGENT_PUBLIC para un retailer e-commerce en Colombia.
-Responde consultas públicas de catálogo.
+Respondes solo consultas PUBLICAS de catalogo.
 Devuelve SIEMPRE JSON valido y SOLO JSON.
 
-===TOOLS===
-1. search_product(query): Busca productos. Devuelve lista con product_ids, name, price/price_min/price_max, availability_units, description.
-2. check_stock(query): Si pides stock explícitamente.
-3. get_product_details(product_id, product_ids): Detalles técnicos. SIEMPRE pasa product_id=product_ids[0] y product_ids=<lista completa de product_ids del search_product> para obtener stock consolidado.
+PRIORIDAD MAXIMA (OBLIGATORIA):
+1) Si la consulta incluye un product_id explicito (ej: "producto 5001"), SIEMPRE usa get_product_details(product_id=<id>, product_ids=[<id>]).
+2) No respondas sobre ese producto sin tool.
+3) Si get_product_details trae datos, responde con esos datos. Si no trae datos, responde NO_DATA.
 
-===DECISIÓN PRINCIPAL===
-Si la consulta menciona marca/producto (iphone, samsung, laptop, etc.) -> USA search_product.
-Si NO hay marca/producto claro (ej. "cuanto cuesta ese?") -> Devuelve NO_DATA pidiendo aclaración.
+TOOLS:
+- search_product(query): busqueda por nombre/marca/categoria.
+- check_stock(query, product_id): stock.
+- get_product_details(product_id, product_ids): detalle completo (price, availability_units, free_shipping, shipping_days, warranty_months, return_days, is_final_sale, promotions, description, specifications).
 
-===	EJEMPLOS ESPECÍFICOS ===
-- iphone/apple -> search_product("iphone")
-- samsung -> search_product("samsung")
-- laptop -> search_product("laptop")
-- Celulares genéricos (sin marca) -> search_product("iphone") Y search_product("samsung")
-- Promociones genéricas -> search_product("iphone"), search_product("samsung"), search_product("laptop")
+DECISION:
+- Consulta con product_id explicito -> get_product_details.
+- Consulta por nombre/marca (iphone, samsung, laptop, etc.) -> search_product.
+- Consulta ambigua sin producto claro -> NO_DATA pidiendo una aclaracion breve.
 
-===REGLA CRÍTICA===
-SI search_product DEVUELVE RESULTADOS (lista no vacía):
-  -> Responde ANSWER con esos productos INMEDIATAMENTE.
-  -> No esperes validación, no dudes, no busques confirmación adicional.
-	-> Si obtuviste resultados de una tool, SIEMPRE USALOS.
+REGLA CRITICA DE RESULTADOS:
+- Si search_product devuelve resultados, debes responder con esos resultados (TODOS).
+- Si hay resultados, esta prohibido decir que "no hay" o "no esta disponible"o "No encontré datos suficientes...”
+- Usa solamente numeros (precios, stock, fechas) exactamente como los devueltos por la tools.
 
-SI search_product DEVUELVE LISTA VACÍA:
-  -> Responde ANSWER diciendo "no está disponible".
+Ej: "¿Qué iphones tienen?"
+		- tool: 6481727.00 
+		- salida: $6.481.727 COP
 
-===RESPUESTAS===
-- Con search_product: Para cada producto -> nombre, precio (o rango si hay price_min/max), disponibilidad, descripción.
-- Máx 5 productos por búsqueda.
-- Si hay get_product_details: incluye specs, instalación, garantía, disponibilidad.
-- Ambiguas (sin producto claro): pide aclaración en UNA sola frase.
-- No puedes agregar características técnicas si no vienen en los datos de la herramienta.
-- No uses conocimiento general del producto.
-- Nunca inventes contenido de caja, accesorios incluidos, pasos de activación, compatibilidad, rankings, comparaciones o beneficios que no vengan explícitamente de las tools.
-- Si el usuario pregunta "qué incluye" y las tools no traen ese dato, responde únicamente que ese detalle no está disponible en el catálogo.
-- Si el usuario pregunta "qué tal ese" o pide una recomendación, resume solo con precio, disponibilidad, descripción y especificaciones explícitas de las tools.
-- Nunca menciones productos que no hayan sido devueltos por search_product o get_product_details.
-- Si solo hay un producto disponible, no inventes una segunda opción.
-- Si una tool devuelve price_min/price_max, debes responder con rango y nunca convertirlo en un precio único.
-- Evita adjetivos evaluativos o persuasivos como "excelente", "premium", "ideal", "mejor opción" o similares, salvo que aparezcan literalmente en los datos de la tool.
-- No des consejos externos como "consulta con el vendedor" o "revisa al momento de la compra" si ese contenido no viene de las tools.
-- En comparaciones o recomendaciones, justifica usando solo campos explícitos de las tools y no inferencias como ecosistema, productividad, calidad fotográfica o perfil de usuario si esos conceptos no vienen textual o directamente de specs/description.
-- Si el usuario pregunta por "el mejor" y la tool solo devolvió un producto, responde que es el único disponible y lista sus datos; no afirmes que es el más reciente ni el mejor salvo que eso aparezca literalmente en la tool.
-- En recomendaciones con varios productos, usa formulaciones neutrales como "opciones disponibles" o "productos disponibles" y evita conclusiones valorativas no explícitas.
+- Si la consulta es por marca/modelo/categoria (ej: samsung, iphone, electronica), siempre intenta search_product antes de responder.
+- Si search_product con la frase completa no devuelve resultados y la consulta incluye marca + categoria generica (ej: "celulares samsung"), realiza una segunda busqueda con la marca sola (ej: "samsung").
+- Si la segunda busqueda devuelve resultados, responde con esos resultados.
 
-- Si el usuario pide "detalles", "información", "especificaciones":
-  → SIEMPRE usar get_product_details
+- No repitas la misma tool con el mismo input mas de una vez.
+- No hagas bucles de busqueda ni cadenas de variantes; si tras 1 busqueda principal y 1 fallback no hay resultados, responde NO_DATA.
 
-- Incluir:
-  → descripción
-  → especificaciones (si existen)
-  → garantía
-  → devolución
-  → envío
+REGLAS PARA PREGUNTAS DE ATRIBUTO (MUY IMPORTANTE):
+- Si preguntan por envio gratis, responde con free_shipping.
+- Si preguntan cuanto tarda en llegar, responde con shipping_days.
+- Si preguntan por garantia, responde con warranty_months.
+- Si preguntan por devolucion, responde con return_days e is_final_sale.
+- Si is_final_sale=true o return_days=0, indica que es Venta Final y no admite devolucion.
+- Para estas preguntas cerradas de atributo, responde en 1-2 oraciones y NO agregues ficha tecnica completa.
+- En preguntas cerradas, responde SOLO el atributo solicitado y no agregues otros atributos no pedidos.
+- Si preguntan por garantia, NO menciones devolucion ni envio.
+- Si preguntan por tiempo de entrega, NO menciones garantia ni devolucion.
+- Si preguntan por envio gratis, NO menciones garantia ni devolucion.
+- Si preguntan por tiempo de entrega, no menciones free_shipping ni promociones.
+- Si la pregunta es solo de precio (ej: "cuanto cuesta ..."), responde solo precio.
+- En preguntas de precio, no llames get_product_details salvo que el usuario pida explicitamente detalles adicionales.
 
-	- Preguntas de recomendación NUNCA pueden devolver NO_DATA.
+RESTRICCIONES:
+- No inventes datos ni uses conocimiento externo.
+- No digas "no tengo informacion" si ya hay datos en la tool.
+- Usa solo campos devueltos por tools.
+- No recomiendes autenticacion en consultas publicas de catalogo.
+- No devuelvas JSON incrustado, fichas largas ni listados de campos internos en el mensaje al usuario.
 
-- Si hay productos disponibles:
-	→ SIEMPRE recomendar al menos uno entre los productos devueltos por las tools.
+ESTILO DE RESPUESTA:
+- Directo, util.
+- Para consultas amplias sin match claro (ej: "productos de electronica" sin resultados), pide especificar tipo de producto (celulares, laptops, televisores) en lugar de decir "no tengo informacion".
+- Para preguntas simples de precio/disponibilidad, no agregues especificaciones tecnicas no solicitadas.
 
-- Si hay varios:
-  → máximo 2 opciones.
+- Usa texto plano unicamente; no uses simbolos decorativos como "✅", "❌", "•" ni caracteres especiales de estado.
+- No uses tabulaciones en el mensaje; usa lineas simples con prefijo "- ".
+- No cierres con contra-preguntas tipo "¿Te gustaria...?" cuando la consulta ya es clara.
+- Si piden precio de un modelo y no existe exacto pero hay variantes cercanas, responde con alternativas directas y concisas, sin introducir preguntas adicionales.
+- Si preguntan solo precio, responde solo precio (y, si aplica, alternativas cercanas), sin agregar envio, garantia ni promociones.
 
-- Si hay uno solo:
-	→ recomienda solo ese.
-
-===ESTILO===
-- Factual, datos exactos de tools, sin suposiciones.
-- Para discovery: breve y conciso.
-- Para detalle técnico: completo y estructurado.
-
-===SALIDA===
-IMPORTANTE: Devuelve SIEMPRE un JSON con estructura exactamente así:
+SALIDA OBLIGATORIA:
 {
-  "route": "ANSWER" o "NO_DATA",
-  "message": "texto puro (STRING ÚNICAMENTE), nunca un objeto. Lista los productos con nombre, precio, disponibilidad. Una respuesta legible."
-	
+	"route": "ANSWER" | "NO_DATA" | "BLOCK",
+	"message": "texto para el usuario"
 }
-
-REGLA DE ORO para message:
-- message SIEMPRE es un string de texto
-- Nunca un objeto { }
-- Nunca un array [ ]
-- Si hay múltiples productos, escribe UNO POR UNO en LÍNEAS SEPARADAS dentro del string: "Producto 1: ...\nProducto 2: ..."
 """
 
 _VALID_ROUTES = {"ANSWER", "NO_DATA", "BLOCK"}
+_DEFAULT_INVENTORY_MESSAGE = "No encontre datos suficientes para responder con precision."
 
 
 def _extract_code_block(raw: str) -> str:
@@ -268,9 +255,237 @@ def _extract_code_block(raw: str) -> str:
 	return raw
 
 
+def _normalize_query_text(value: str) -> str:
+	text = str(value or "").strip().lower()
+	text = text.translate(str.maketrans(
+		"áéíóúüñ",
+		"aeiouun",
+	))
+	text = re.sub(r"[^a-z0-9\s]", " ", text)
+	text = re.sub(r"\s+", " ", text).strip()
+	return text
+
+
+def _format_currency(value: object) -> str | None:
+	try:
+		amount = float(value)
+	except (TypeError, ValueError):
+		return None
+	formatted = f"{int(round(amount)):,}".replace(",", ".")
+	return f"${formatted}"
+
+
+def _normalize_model_name(name: object) -> str:
+	return _normalize_query_text(str(name or ""))
+
+
+def _dedupe_search_results(results: list[dict]) -> list[dict]:
+	seen: set[str] = set()
+	deduped: list[dict] = []
+	for item in results:
+		if not isinstance(item, dict):
+			continue
+		name_key = _normalize_model_name(item.get("name"))
+		product_id = item.get("product_id")
+		key = name_key or str(product_id)
+		if not key or key in seen:
+			continue
+		seen.add(key)
+		deduped.append(item)
+	return deduped
+
+
+def _is_price_query(query: str) -> bool:
+	normalized = _normalize_query_text(query)
+	return any(token in normalized for token in ["cuanto cuesta", "cuanto vale", "precio"])
+
+
+def _is_stock_query(query: str) -> bool:
+	normalized = _normalize_query_text(query)
+	return any(token in normalized for token in ["stock", "disponible", "disponibilidad", "hay"])
+
+
+def _is_free_shipping_query(query: str) -> bool:
+	normalized = _normalize_query_text(query)
+	return "envio gratis" in normalized or "envio es gratis" in normalized
+
+
+def _is_shipping_days_query(query: str) -> bool:
+	normalized = _normalize_query_text(query)
+	return any(token in normalized for token in ["cuanto tarda", "cuanto demora", "llega", "tiempo de entrega"])
+
+
+def _is_warranty_query(query: str) -> bool:
+	return "garantia" in _normalize_query_text(query)
+
+
+def _is_return_query(query: str) -> bool:
+	normalized = _normalize_query_text(query)
+	return "devol" in normalized or "devolver" in normalized
+
+
+def _is_promotions_query(query: str) -> bool:
+	normalized = _normalize_query_text(query)
+	return any(token in normalized for token in ["promocion", "promociones", "descuento", "oferta"])
+
+
+def _is_closed_attribute_query(query: str) -> bool:
+	return any([
+		_is_price_query(query),
+		_is_stock_query(query),
+		_is_free_shipping_query(query),
+		_is_shipping_days_query(query),
+		_is_warranty_query(query),
+		_is_return_query(query),
+		_is_promotions_query(query),
+	])
+
+
+def _find_latest_product_details(traces: list[dict]) -> dict | None:
+	for trace in reversed(traces):
+		tool_name = str(trace.get("tool_name", "")).strip()
+		output_data = trace.get("output_data", {}) or {}
+		if tool_name == "get_product_details" and isinstance(output_data, dict) and output_data.get("product_id") is not None:
+			return output_data
+	return None
+
+
+def _strip_follow_up_question(text: str) -> str:
+	cleaned = str(text or "").strip()
+	cleaned = re.sub(r"\s*¿[^\n?]{1,240}\?\s*$", "", cleaned, flags=re.IGNORECASE)
+	cleaned = re.sub(r"\n\s*¿[^\n?]{1,240}\?\s*$", "", cleaned, flags=re.IGNORECASE)
+	return cleaned.strip()
+
+
+def _recover_from_product_details(query: str, details: dict) -> dict | None:
+	name = str(details.get("name") or f"producto {details.get('product_id')}").strip()
+	product_id = details.get("product_id")
+	price = _format_currency(details.get("price"))
+	availability_units = details.get("availability_units")
+	shipping_days = details.get("shipping_days")
+	warranty_months = details.get("warranty_months")
+	free_shipping = details.get("free_shipping")
+	return_days = details.get("return_days")
+	is_final_sale = details.get("is_final_sale")
+	promotions = details.get("promotions") or []
+
+	if _is_price_query(query) and price:
+		return {"route": "ANSWER", "message": f"El producto **{name}** (producto {product_id}) cuesta **{price}**."}
+
+	if _is_stock_query(query) and availability_units is not None:
+		if details.get("is_available"):
+			return {"route": "ANSWER", "message": f"Sí, el **{name}** (producto {product_id}) tiene **{availability_units} unidades disponibles**."}
+		return {"route": "ANSWER", "message": f"No, el **{name}** (producto {product_id}) no tiene stock disponible en este momento."}
+
+	if _is_free_shipping_query(query) and free_shipping is not None:
+		answer = "Sí" if bool(free_shipping) else "No"
+		suffix = "es gratis" if bool(free_shipping) else "no es gratis"
+		return {"route": "ANSWER", "message": f"{answer}, el envío para el **{name}** (producto {product_id}) {suffix}."}
+
+	if _is_shipping_days_query(query) and shipping_days is not None:
+		return {"route": "ANSWER", "message": f"El producto **{name}** llega en **{shipping_days} días** desde la confirmación del pedido."}
+
+	if _is_warranty_query(query) and warranty_months is not None:
+		return {"route": "ANSWER", "message": f"El producto **{name}** (producto {product_id}) tiene una garantía de **{warranty_months} meses**."}
+
+	if _is_return_query(query):
+		if is_final_sale or return_days == 0:
+			return {"route": "ANSWER", "message": f"El producto **{name}** es una **Venta Final** y no admite devolución según nuestra política."}
+		if return_days is not None:
+			return {"route": "ANSWER", "message": f"El producto **{name}** tiene un plazo de devolución de **{return_days} días** desde la entrega."}
+
+	if _is_promotions_query(query):
+		if promotions:
+			promotion_lines = "\n".join(f"- {str(item).strip()}" for item in promotions if str(item).strip())
+			return {"route": "ANSWER", "message": f"El producto **{name}** (producto {product_id}) tiene estas promociones activas:\n{promotion_lines}"}
+		return {"route": "ANSWER", "message": f"El producto **{name}** (producto {product_id}) **no tiene promociones activas** en este momento."}
+
+	return None
+
+
+def _recover_from_search_results(query: str, results: list[dict]) -> dict | None:
+	filtered = _dedupe_search_results(results)[:4]
+	if not filtered:
+		return None
+
+	if _is_price_query(query):
+		lines: list[str] = []
+		for item in filtered:
+			name = str(item.get("name") or f"producto {item.get('product_id')}").strip()
+			price = _format_currency(item.get("price"))
+			if not price:
+				continue
+			lines.append(f"- **{name}**: {price}")
+		if lines:
+			message = "Encontré estos modelos y precios disponibles:\n" + "\n".join(lines)
+			return {"route": "ANSWER", "message": message}
+
+	if _is_stock_query(query):
+		lines = []
+		for item in filtered:
+			name = str(item.get("name") or f"producto {item.get('product_id')}").strip()
+			availability_units = item.get("availability_units")
+			if availability_units is None:
+				continue
+			lines.append(f"- **{name}**: {availability_units} unidades disponibles")
+		if lines:
+			return {"route": "ANSWER", "message": "Encontré estos productos disponibles:\n" + "\n".join(lines)}
+
+	lines = []
+	for item in filtered:
+		name = str(item.get("name") or f"producto {item.get('product_id')}").strip()
+		price = _format_currency(item.get("price"))
+		availability_units = item.get("availability_units")
+		parts = [f"**{name}**"]
+		if price:
+			parts.append(f"Precio: {price}")
+		if availability_units is not None:
+			parts.append(f"Disponible: {availability_units} unidades")
+		lines.append("- " + ". ".join(parts) + ".")
+
+	if lines:
+		return {"route": "ANSWER", "message": "\n".join(lines)}
+
+	return None
+
+
+def _recover_inventory_result(query: str, raw: str, traces: list[dict], parsed_result: dict) -> dict:
+	if parsed_result.get("message") != _DEFAULT_INVENTORY_MESSAGE:
+		return parsed_result
+
+	latest_product_details = None
+	search_results: list[dict] = []
+	for trace in traces:
+		tool_name = str(trace.get("tool_name", "")).strip()
+		output_data = trace.get("output_data", {}) or {}
+		if tool_name == "get_product_details" and isinstance(output_data, dict) and output_data.get("product_id") is not None:
+			latest_product_details = output_data
+		elif tool_name == "search_product" and isinstance(output_data, dict):
+			search_results.extend(output_data.get("results", []) or [])
+
+	if latest_product_details is not None:
+		recovered = _recover_from_product_details(query, latest_product_details)
+		if recovered is not None:
+			return recovered
+
+	if search_results:
+		recovered = _recover_from_search_results(query, search_results)
+		if recovered is not None:
+			return recovered
+
+	cleaned_raw = _strip_follow_up_question(_extract_code_block(raw))
+	if cleaned_raw and not cleaned_raw.startswith("{"):
+		return {
+			"route": "ANSWER",
+			"message": cleaned_raw,
+		}
+
+	return parsed_result
+
+
 def _parse_inventory_result(raw: str) -> dict:
 	route = "NO_DATA"
-	message = "No encontre datos suficientes para responder con precision."
+	message = _DEFAULT_INVENTORY_MESSAGE
 
 	def _extract_message_fallback(text: str) -> str | None:
 		message_key = re.search(r'"message"\s*:\s*"', text, flags=re.IGNORECASE)
@@ -309,16 +524,16 @@ def _parse_inventory_result(raw: str) -> dict:
 		
 		msg = data.get("message", message)
 		
-		# Si message es un string, usalo directo
+		
 		if isinstance(msg, str):
 			message = msg.strip()
-		# Si es un objeto/dict, conviertealo a JSON string
+		
 		elif isinstance(msg, dict):
 			message = json.dumps(msg, ensure_ascii=False, indent=2)
-		# Si es una lista, convierteala a texto legible
+	
 		elif isinstance(msg, list):
 			message = "\n".join(str(item) for item in msg)
-		# Por defecto, stringify
+		# stringify
 		else:
 			message = str(msg).strip()
 		
@@ -405,9 +620,19 @@ def solve_inventory_query(input: str, query_type: str = "PUBLIC"):
 				"response_data": None,
 			}
 
+	trace_start_idx = get_tool_trace_length()
 	response = agent(input)
 	raw = _extract_code_block(str(response).strip())
 	result = _parse_inventory_result(raw)
+	traces = get_tool_trace_since(trace_start_idx)
+	latest_product_details = _find_latest_product_details(traces)
+	if query_type == "PUBLIC" and latest_product_details is not None and _is_closed_attribute_query(input):
+		tool_grounded = _recover_from_product_details(input, latest_product_details)
+		if tool_grounded is not None:
+			result = tool_grounded
+	result = _recover_inventory_result(input, str(response).strip(), traces, result)
+	if query_type == "PUBLIC" and _is_price_query(input):
+		result["message"] = _strip_follow_up_question(result.get("message", ""))
 
 	return {
 		"route": result["route"],

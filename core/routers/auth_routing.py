@@ -10,28 +10,17 @@ load_dotenv()
 
 #Model providers 
 
-#Ollama
-def build_ollama_model() -> OllamaModel:
-  return OllamaModel(
-    host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-    model_id=os.getenv("OLLAMA_MODEL_ID", "qwen2.5:7b"),
-    temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0")),
-    max_tokens=int(os.getenv("OLLAMA_MAX_TOKENS", "100")),
-    options={"num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "1024"))},
-  )
-
 #Bedrock
 def build_bedrock_model() -> BedrockModel:
   return BedrockModel(
     model_id="mistral.ministral-3-8b-instruct",
     region_name=os.getenv("AWS_REGION", "us-east-2"),
     temperature=0,
-    max_tokens=100,
+    max_tokens=300,
     streaming=False
   )
 
 
-#Hard coded model provider (it can be changed according to availability)
 model = build_bedrock_model()
 
 system_prompt = """ 
